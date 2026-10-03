@@ -75,7 +75,22 @@ int main()
 		CHECK(p.a == (float)kAlphaLevels[i / 2], "alpha patch %d = %g", i, p.a);
 	}
 
-	// 6. Invalid settings rejected.
+	// 6. Isolated HLG mode: every column is one of the HLG levels, full height.
+	Settings hs;
+	hs.mode = Mode::HlgSteps;
+	CHECK(generate(hs, px), "generate hlg steps");
+	for (int i = 0; i < kHlgCount; i++) {
+		const uint32_t x = (uint32_t)((i + 0.5) * hs.width / kHlgCount);
+		for (uint32_t yy : {0u, hs.height / 2, hs.height - 1}) {
+			const Rgba &p = px[(size_t)yy * hs.width + x];
+			CHECK(p.r == (float)hlg_level_to_obs_nits(kHlgLevels[i]), "hlg steps col %d row %u", i, yy);
+		}
+	}
+	Settings bm = s;
+	bm.mode = (Mode)99;
+	CHECK(!generate(bm, px), "invalid mode accepted");
+
+	// 7. Invalid settings rejected.
 	Settings bad = s;
 	bad.flat_nits = NAN;
 	bad.mode = Mode::FlatField;

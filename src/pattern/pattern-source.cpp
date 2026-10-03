@@ -62,9 +62,8 @@ const char *pattern_get_name(void *)
 Settings read_settings(obs_data_t *data)
 {
 	Settings s;
-	s.mode = (Mode)obs_data_get_int(data, "mode");
-	if (s.mode != Mode::Chart && s.mode != Mode::FlatField)
-		s.mode = Mode::Chart;
+	const int mode = (int)obs_data_get_int(data, "mode");
+	s.mode = hdrtk::pattern::mode_valid(mode) ? (Mode)mode : Mode::Chart;
 	s.flat_nits = obs_data_get_double(data, "flat_nits");
 	s.width = (uint32_t)obs_data_get_int(data, "width");
 	s.height = (uint32_t)obs_data_get_int(data, "height");
@@ -120,6 +119,10 @@ obs_properties_t *pattern_properties(void *)
 	obs_property_t *p = obs_properties_add_list(props, "mode", obs_module_text("Pattern.Mode"), OBS_COMBO_TYPE_LIST,
 						    OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Pattern.Mode.Chart"), (int)Mode::Chart);
+	obs_property_list_add_int(p, obs_module_text("Pattern.Mode.Hlg"), (int)Mode::HlgSteps);
+	obs_property_list_add_int(p, obs_module_text("Pattern.Mode.Neutral"), (int)Mode::NeutralSteps);
+	obs_property_list_add_int(p, obs_module_text("Pattern.Mode.Highlight"), (int)Mode::HighlightSteps);
+	obs_property_list_add_int(p, obs_module_text("Pattern.Mode.Ramp"), (int)Mode::Ramp);
 	obs_property_list_add_int(p, obs_module_text("Pattern.Mode.Flat"), (int)Mode::FlatField);
 	obs_property_set_modified_callback(p, mode_modified);
 
@@ -165,8 +168,8 @@ void rebuild_if_needed(PatternSource *p)
 	p->tex_width = p->texture ? s.width : 0;
 	p->tex_height = p->texture ? s.height : 0;
 	p->built_for_white = white;
-	obs_log(LOG_INFO, "[pattern] built %s %ux%u, SDR white %.1f nits", s.mode == Mode::Chart ? "chart" : "flat",
-		s.width, s.height, white);
+	obs_log(LOG_INFO, "[pattern] built %s %ux%u, SDR white %.1f nits", hdrtk::pattern::mode_label(s.mode), s.width,
+		s.height, white);
 }
 
 void pattern_render(void *data, gs_effect_t *)

@@ -72,7 +72,12 @@ double obs_nits_to_hlg_level(double nits);
 // Rec.2020 -> Rec.709 linear RGB (D65), rows applied to column vectors.
 void rec2020_to_rec709(const double in[3], double out[3]);
 
-enum class Mode : int { Chart = 0, FlatField = 1 };
+// Isolated modes fill the whole frame with one row of the chart, so a
+// waveform shows only those levels (one flat trace per patch).
+enum class Mode : int { Chart = 0, FlatField = 1, HlgSteps = 2, NeutralSteps = 3, HighlightSteps = 4, Ramp = 5 };
+
+bool mode_valid(int mode);
+const char *mode_label(Mode mode);
 
 struct Settings {
 	Mode mode = Mode::Chart;

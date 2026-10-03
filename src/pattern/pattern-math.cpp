@@ -123,8 +123,34 @@ static int patch_at(uint32_t x, uint32_t width, int n)
 	return (int)i;
 }
 
+bool mode_valid(int mode)
+{
+	return mode >= (int)Mode::Chart && mode <= (int)Mode::Ramp;
+}
+
+const char *mode_label(Mode mode)
+{
+	switch (mode) {
+	case Mode::Chart:
+		return "chart";
+	case Mode::FlatField:
+		return "flat";
+	case Mode::HlgSteps:
+		return "hlg-steps";
+	case Mode::NeutralSteps:
+		return "neutral-steps";
+	case Mode::HighlightSteps:
+		return "highlight-steps";
+	case Mode::Ramp:
+		return "ramp";
+	}
+	return "unknown";
+}
+
 bool generate(const Settings &s, std::vector<Rgba> &out)
 {
+	if (!mode_valid((int)s.mode))
+		return false;
 	if (s.width < 64 || s.height < 64 || s.width > 8192 || s.height > 8192)
 		return false;
 	if (!std::isfinite(s.flat_nits) || s.flat_nits < 0.0 || s.flat_nits > 100000.0)
@@ -135,6 +161,40 @@ bool generate(const Settings &s, std::vector<Rgba> &out)
 	if (s.mode == Mode::FlatField) {
 		for (auto &px : out)
 			px = grey(s.flat_nits);
+		return true;
+	}
+
+	if (s.mode != Mode::Chart) {
+		for (uint32_t y = 0; y < s.height; y++) {
+			Rgba *row = &out[(size_t)y * s.width];
+			for (uint32_t x = 0; x < s.width; x++) {
+				Rgba px{0, 0, 0, 1};
+				int i;
+				switch (s.mode) {
+				case Mode::HlgSteps:
+					i = patch_at(x, s.width, kHlgCount);
+					if (i >= 0)
+						px = grey(hlg_level_to_obs_nits(kHlgLevels[i]));
+					break;
+				case Mode::NeutralSteps:
+					i = patch_at(x, s.width, kNeutralCount);
+					if (i >= 0)
+						px = grey(kNeutralNits[i]);
+					break;
+				case Mode::HighlightSteps:
+					i = patch_at(x, s.width, kStairCount);
+					if (i >= 0)
+						px = grey(kStairBaseNits * std::exp2(i / 6.0));
+					break;
+				case Mode::Ramp:
+					px = grey(std::pow(10.0, -2.0 + 6.0 * ((x + 0.5) / s.width)));
+					break;
+				default:
+					break;
+				}
+				row[x] = px;
+			}
+		}
 		return true;
 	}
 
