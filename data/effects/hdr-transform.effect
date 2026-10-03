@@ -1,0 +1,207 @@
+// OBS HDR Toolkit - HDR Transform (hdr_toolkit_transform_v1), Corner Pin
+// Copyright (C) 2026 srl01-coding, GPL-2.0-or-later
+//
+// Written from the implementation brief (sections 4.3, 4.4); no StreamFX code.
+// The inverse-map functions are mirrored line for line in
+// src/transform/quad-math.cpp (shader_inverse_*) and tested there.
+//
+// `image` is the filter texrender: premultiplied linear RGB in the target's
+// native OBS colour space. Geometry only: no colour arithmetic, no clamp of
+// RGB. Pixels outside the warped quad are transparent black.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+// Bilinear (StreamFX-style) warp: P(u,v) = A + e*u + f*v + g*u*v
+uniform float2 quad_a;
+uniform float2 quad_e;
+uniform float2 quad_f;
+uniform float2 quad_g;
+
+// Projective warp: rows of the normalised inverse homography
+uniform float3 hinv0;
+uniform float3 hinv1;
+uniform float3 hinv2;
+uniform float w_sign = 1.0;
+
+sampler_state linear_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+sampler_state point_sampler {
+	Filter   = Point;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertInOut VSDefault(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float cross2(float2 a, float2 b)
+{
+	return a.x * b.y - a.y * b.x;
+}
+
+// Returns (u, v, valid).
+float3 inverse_bilinear(float2 p)
+{
+	float uv_tol = 0.00001;
+	float2 h = p - quad_a;
+	float qa = cross2(quad_g, quad_f);
+	float qb = cross2(quad_e, quad_f) + cross2(h, quad_g);
+	float qc = cross2(h, quad_e);
+
+	float v1;
+	float v2;
+	if (abs(qa) <= 0.000001 * abs(qb)) {
+		if (abs(qb) < 0.000000000001)
+			return float3(0.0, 0.0, 0.0);
+		v1 = -qc / qb;
+		v2 = v1;
+	} else {
+		float disc = qb * qb - 4.0 * qa * qc;
+		if (disc < -0.00001 * (qb * qb + abs(4.0 * qa * qc)))
+			return float3(0.0, 0.0, 0.0);
+		disc = max(disc, 0.0);
+		float sgn = (qb >= 0.0) ? 1.0 : -1.0;
+		float z = -0.5 * (qb + sgn * sqrt(disc));
+		if (abs(z) < 0.000000000001) {
+			v1 = -qb / (2.0 * qa);
+			v2 = v1;
+		} else {
+			v1 = z / qa;
+			v2 = qc / z;
+		}
+	}
+
+	float best_r = 1000000.0;
+	float3 best = float3(0.0, 0.0, 0.0);
+
+	// candidate 1
+	float2 k = quad_e + quad_g * v1;
+	float kk = dot(k, k);
+	if (kk > 0.000000000001) {
+		float u = dot(h - quad_f * v1, k) / kk;
+		if (u >= -uv_tol && u <= 1.0 + uv_tol && v1 >= -uv_tol && v1 <= 1.0 + uv_tol) {
+			float2 rr = quad_a + quad_e * u + quad_f * v1 + quad_g * (u * v1) - p;
+			float r = dot(rr, rr);
+			if (r < best_r) {
+				best_r = r;
+				best = float3(u, v1, 1.0);
+			}
+		}
+	}
+	// candidate 2
+	k = quad_e + quad_g * v2;
+	kk = dot(k, k);
+	if (kk > 0.000000000001) {
+		float u2 = dot(h - quad_f * v2, k) / kk;
+		if (u2 >= -uv_tol && u2 <= 1.0 + uv_tol && v2 >= -uv_tol && v2 <= 1.0 + uv_tol) {
+			float2 rr2 = quad_a + quad_e * u2 + quad_f * v2 + quad_g * (u2 * v2) - p;
+			float r2 = dot(rr2, rr2);
+			if (r2 < best_r) {
+				best_r = r2;
+				best = float3(u2, v2, 1.0);
+			}
+		}
+	}
+	return best;
+}
+
+float3 inverse_projective(float2 p)
+{
+	float uv_tol = 0.00001;
+	float3 pp = float3(p, 1.0);
+	float qx = dot(hinv0, pp);
+	float qy = dot(hinv1, pp);
+	float qz = dot(hinv2, pp);
+	if (!(qz * w_sign > 0.0000001))
+		return float3(0.0, 0.0, 0.0);
+	float u = qx / qz;
+	float v = qy / qz;
+	if (u >= -uv_tol && u <= 1.0 + uv_tol && v >= -uv_tol && v <= 1.0 + uv_tol)
+		return float3(u, v, 1.0);
+	return float3(0.0, 0.0, 0.0);
+}
+
+// Valid UVs are clamped by the tolerance only; invalid ones never sample, so
+// edge pixels are not smeared outside the quad.
+float4 PSBilinearLinear(VertInOut vert_in) : TARGET
+{
+	float3 m = inverse_bilinear(vert_in.uv);
+	if (m.z < 0.5)
+		return float4(0.0, 0.0, 0.0, 0.0);
+	return image.Sample(linear_sampler, clamp(m.xy, 0.0, 1.0));
+}
+
+float4 PSBilinearPoint(VertInOut vert_in) : TARGET
+{
+	float3 m = inverse_bilinear(vert_in.uv);
+	if (m.z < 0.5)
+		return float4(0.0, 0.0, 0.0, 0.0);
+	return image.Sample(point_sampler, clamp(m.xy, 0.0, 1.0));
+}
+
+float4 PSProjectiveLinear(VertInOut vert_in) : TARGET
+{
+	float3 m = inverse_projective(vert_in.uv);
+	if (m.z < 0.5)
+		return float4(0.0, 0.0, 0.0, 0.0);
+	return image.Sample(linear_sampler, clamp(m.xy, 0.0, 1.0));
+}
+
+float4 PSProjectivePoint(VertInOut vert_in) : TARGET
+{
+	float3 m = inverse_projective(vert_in.uv);
+	if (m.z < 0.5)
+		return float4(0.0, 0.0, 0.0, 0.0);
+	return image.Sample(point_sampler, clamp(m.xy, 0.0, 1.0));
+}
+
+technique BilinearLinear
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSBilinearLinear(vert_in);
+	}
+}
+
+technique BilinearPoint
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSBilinearPoint(vert_in);
+	}
+}
+
+technique ProjectiveLinear
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSProjectiveLinear(vert_in);
+	}
+}
+
+technique ProjectivePoint
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSProjectivePoint(vert_in);
+	}
+}

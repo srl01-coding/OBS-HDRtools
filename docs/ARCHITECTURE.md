@@ -11,7 +11,7 @@ sharing a small colour/rendering support layer:
 
 | Filter | ID (stable) | Status |
 |---|---|---|
-| HDR Transform | `hdr_toolkit_transform_v1` | not started (P1, P4) |
+| HDR Transform | `hdr_toolkit_transform_v1` | P1 Corner Pin (bilinear + projective) implemented; 3D modes, edge AA, mipmapping in P4 |
 | HDR Color | `hdr_toolkit_color_v1` | not started (P2, P3, P5) |
 
 Developer-only objects present in P0:
@@ -21,8 +21,9 @@ Developer-only objects present in P0:
 | Neutral filter | `hdr_toolkit_neutral_dev` | Proves the HDR filter render path with a real shader (brief 3.5, P0 exit). |
 | Test pattern source | `hdr_toolkit_pattern_dev` | Exact extended-linear values with no video decode (brief 11.3). |
 
-The production IDs are deliberately **not** registered yet, so no saved scene can
-contain a stub `_v1` filter whose settings schema later changes.
+`hdr_toolkit_color_v1` is deliberately **not** registered yet, so no saved scene can
+contain a stub filter whose settings schema later changes. The Transform v1 schema
+is in `docs/PARAMETER_SCHEMA.md`; P4 additions are additive.
 
 ## Pinned baseline
 
@@ -51,12 +52,16 @@ src/
   neutral/neutral-filter.cpp      P0 neutral HDR filter
   pattern/pattern-math.*          pure CPU pattern generation (unit-tested, no libobs)
   pattern/pattern-source.cpp      developer HDR pattern source
+  transform/quad-math.*           corner-pin geometry: validation, inverse bilinear, homography (no libobs)
+  transform/transform-filter.cpp  HDR Transform filter
 data/
   effects/hdr-neutral.effect
+  effects/hdr-transform.effect
   locale/en-US.ini
 tests/cpu/
   math_check.py                   brief section 15, verbatim
   test_pattern.cpp                pattern + HLG model tests
+  test_quad.cpp                   geometry, float shader mirror, validation
 docs/                             this file, COLOR_PIPELINE, STREAMFX_REFERENCE, VALIDATION
 ```
 

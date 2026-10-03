@@ -13,8 +13,12 @@ uniform float units_per_nit = 0.004926108;
 uniform float test_gain = 1.0;
 uniform float alpha_epsilon = 0.000001;
 
-sampler_state point_sampler {
-	Filter   = Point;
+// Linear, not point: when the scene item is scaled, this pass is also the
+// draw into the scene, and point sampling would resample nearest-neighbour
+// (visible on thin patch borders). At native size, samples hit texel centres
+// and linear == point exactly.
+sampler_state linear_sampler {
+	Filter   = Linear;
 	AddressU = Clamp;
 	AddressV = Clamp;
 };
@@ -34,7 +38,7 @@ VertInOut VSDefault(VertInOut vert_in)
 
 float4 PSNeutral(VertInOut vert_in) : TARGET
 {
-	float4 px = image.Sample(point_sampler, vert_in.uv);
+	float4 px = image.Sample(linear_sampler, vert_in.uv);
 
 	// Fully/near-transparent: never divide by alpha. A gain on premultiplied
 	// RGB is exact without unpremultiplying.

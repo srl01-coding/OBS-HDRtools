@@ -20,4 +20,5 @@ Governing spec: *OBS HDR Toolkit: implementation brief for Claude Code* v1.0
 - Format: clang-format 19 (`.clang-format`), gersemi for CMake (CI check-format on main).
 
 ## Status
-P0: neutral dev filter + pattern source + docs. Next: P1 Corner Pin (bilinear + projective).
+P0 done (G0, N1 qualitative, N3b observed in OBS 32.2.2). P1 Corner Pin implemented
+(transform-filter.cpp; shader mirrored in quad-math.cpp - keep in lock-step). Next: P2 Color.

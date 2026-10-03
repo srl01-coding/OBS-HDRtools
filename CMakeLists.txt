@@ -44,6 +44,9 @@ target_sources(
     src/pattern/pattern-math.cpp
     src/pattern/pattern-math.hpp
     src/pattern/pattern-source.cpp
+    src/transform/quad-math.cpp
+    src/transform/quad-math.hpp
+    src/transform/transform-filter.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
