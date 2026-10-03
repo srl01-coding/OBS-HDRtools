@@ -11,7 +11,7 @@ evidence for every result; never infer a result from a different layer.
 | Authoring/CI environment | Linux container (no GPU, no OBS) + GitHub Actions (template workflows) |
 | Build SDK | OBS 31.1.1 (template buildspec) |
 | User's OBS version / OS / GPU / backend | NOT RECORDED - fill in when running OBS tests |
-| Canvas colour space / format, SDR white, HDR nominal peak | NOT RECORDED |
+| Canvas colour space / format, SDR white, HDR nominal peak | Canvas base 2090x990 (from preview status bar); colour settings NOT RECORDED |
 | Capture device, pixel format, source range, camera profile | NOT RECORDED |
 
 ## Layer 1 - CPU maths (run in authoring environment)
@@ -44,7 +44,7 @@ Pattern (developer)`, Chart, 1920x1080. Scope: srl01-coding/obs-color-monitor
 | G0 | Plugin loads; log shows `plugin loaded (version 0.1.0, built against libobs 31.1.1, running on <ver>)`; no `failed to compile` error | load OK | PASS (2026-10-04, user: OBS 32.2.2 Windows; filter and source both listed and rendering; log line not yet captured) |
 | P1 | Pattern alone, mode *HLG levels only*: reads 0,10,...,100% on the lines, 105% at ~984, 109% at ~1019 | exact to scope resolution; proves values above 940 reach the scope without the input-decoder clamp | NOT RUN |
 | P2 | Pattern alone: neutral 203-nit patch at 75% only when W = 203; other W moves it (W-relative storage, absolute nits meaning) | consistent with W | NOT RUN |
-| N1 | Pattern -> Neutral (force render ON, gain 0): scope identical to P1 (every bar, ramp shape, 105/109% bars) | no change | NOT RUN |
+| N1 | Pattern -> Neutral (force render ON, gain 0): scope identical to P1 (every bar, ramp shape, 105/109% bars) | no change | PASS (qualitative, 2026-10-04: Chart mode, filter off vs on at 0 EV, docked scope after the obs-color-monitor minification fix; traces visually identical. Exact per-level reading in *HLG levels only* mode still to do) |
 | N2 | Same with force render OFF (skip path) | identical to N1 | NOT RUN |
 | N3 | Neutral with test gain +1 EV (x2 nits) on the HLG row: 50% -> 63.2% (code ~618), 60% -> 72.0% (~695), 70% -> 81.3% (~776), 75% -> 86.1% (~818), 80% -> 90.9% (~860), 90% -> 100.7% (~946); 100/105/109% bars all at code 1023 (OBS HLG encode ceiling, ~110%) | shader live, no clamp at SDR white (a clamp at 1.0 would pile everything >= 75%-at-W=203 onto one level) | NOT RUN |
 | N3b | Neutral with negative test gain on the Chart: brightest patch (10,000 nits) brought down to the HLG ceiling. Model: code 1023 (E' = 1.0947) = 1866 nits, so 10,000 nits reaches it at -2.42 EV | consistent with no clamp at SDR white: a clamp at linear 1.0 would cap the chart at 75% at 0 EV and lower for any negative gain | PASS (observational, 2026-10-04: user reports about -2.3 to -2.35 EV puts the top at 109%; within reading precision of -2.42) |
