@@ -19,12 +19,15 @@ test procedure and what has and has not been verified.
 
 ## Install (Windows, test profile)
 
-1. Download the `obs-hdr-toolkit-*-windows-x64` artifact from the latest
-   successful *Push* run under **Actions**.
-2. Close OBS, copy the archive's contents into the OBS install folder
-   (`obs-plugins\64bit\obs-hdr-toolkit.dll`,
-   `data\obs-plugins\obs-hdr-toolkit\...`).
-3. Remove those two paths to uninstall.
+1. Download the `obs-hdr-toolkit-<version>-windows-x64-<commit>` artifact from
+   the latest successful *Push* run under **Actions**, and unzip it (it contains
+   a second zip; unzip that too).
+2. Close OBS. Copy the `obs-hdr-toolkit` folder (containing `bin\64bit\obs-hdr-toolkit.dll`
+   and `data\`) into `C:\ProgramData\obs-studio\plugins\`.
+3. To uninstall, delete `C:\ProgramData\obs-studio\plugins\obs-hdr-toolkit`.
+
+This location is separate from the OBS install folder, so it does not touch
+other plugins.
 
 ## Documentation
 

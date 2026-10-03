@@ -28,8 +28,8 @@ evidence for every result; never infer a result from a different layer.
 | ID | Test | Status | Evidence |
 |---|---|---|---|
 | B1 | Sources compile against OBS 32.2.2 headers (`g++ -fsyntax-only -Wall -Wextra`) | PASS | no diagnostics |
-| B2 | CI Windows x64 build (OBS 31.1.1 SDK) | see CI run | |
-| B3 | CI macOS / Ubuntu builds | see CI run | built by template; not a support claim |
+| B2 | CI Windows x64 build (OBS 31.1.1 SDK) | PASS | run 37128414670, commit c7f078b49, artifact `obs-hdr-toolkit-0.1.0-windows-x64-c7f078b49` |
+| B3 | CI macOS / Ubuntu builds, clang-format 19 + gersemi checks | PASS | same run; builds are not a macOS/Linux support claim (nothing run there) |
 
 ## Layer 2 - OBS / GPU (requires the user's machine)
 
