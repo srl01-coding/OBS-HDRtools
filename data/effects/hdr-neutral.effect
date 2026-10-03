@@ -1,0 +1,58 @@
+// OBS HDR Toolkit - P0 neutral filter (hdr_toolkit_neutral_dev)
+// Copyright (C) 2026 srl01-coding, GPL-2.0-or-later
+//
+// Input `image` is the filter texrender: premultiplied linear RGB in the
+// target's native OBS colour space (sRGB-aware sampling for GS_CS_SRGB).
+// No saturate/clamp anywhere: values > 1 and negative components pass.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float nits_per_unit = 203.0;
+uniform float units_per_nit = 0.004926108;
+uniform float test_gain = 1.0;
+uniform float alpha_epsilon = 0.000001;
+
+sampler_state point_sampler {
+	Filter   = Point;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertInOut VSDefault(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float4 PSNeutral(VertInOut vert_in) : TARGET
+{
+	float4 px = image.Sample(point_sampler, vert_in.uv);
+
+	// Fully/near-transparent: never divide by alpha. A gain on premultiplied
+	// RGB is exact without unpremultiplying.
+	if (px.a <= alpha_epsilon)
+		return float4(px.rgb * test_gain, px.a);
+
+	float3 straight = px.rgb / px.a;
+	float3 nits = straight * nits_per_unit;   // canonical grading units
+	nits = nits * test_gain;                  // developer-only, 1.0 in production
+	float3 working = nits * units_per_nit;
+	return float4(working * px.a, px.a);
+}
+
+technique Neutral
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSNeutral(vert_in);
+	}
+}
