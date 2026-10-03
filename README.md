@@ -23,7 +23,11 @@ test procedure and what has and has not been verified.
    the latest successful *Push* run under **Actions**, and unzip it (it contains
    a second zip; unzip that too).
 2. Close OBS. Copy the `obs-hdr-toolkit` folder (containing `bin\64bit\obs-hdr-toolkit.dll`
-   and `data\`) into `C:\ProgramData\obs-studio\plugins\`.
+   and `data\`) into `C:\ProgramData\obs-studio\plugins\`. **Create the `obs-studio\plugins`
+   folders if they do not exist** (they don't on a fresh install; `ProgramData` is hidden).
+   Alternative, Program Files layout (the folder structure is different):
+   `bin\64bit\obs-hdr-toolkit.dll` -> `C:\Program Files\obs-studio\obs-plugins\64bit\`, and the
+   *contents* of `data\` -> `C:\Program Files\obs-studio\data\obs-plugins\obs-hdr-toolkit\`.
 3. To uninstall, delete `C:\ProgramData\obs-studio\plugins\obs-hdr-toolkit`.
 
 This location is separate from the OBS install folder, so it does not touch
