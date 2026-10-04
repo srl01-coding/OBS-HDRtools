@@ -2,6 +2,9 @@
 
 Governing spec: *OBS HDR Toolkit: implementation brief for Claude Code* v1.0
 (3 Oct 2026). It supersedes earlier conversations. Work packages P0-P5 (brief 12.1).
+Program denoise: `docs/denoise/BRIEF_v1.2.md` governs (its own P0-P5); design notes in
+`docs/denoise/DENOISE.md`. HQDN3D must be written independently from
+`docs/HQDN3D_DESIGN.md` - never copy/port FFmpeg/MPlayer code (brief 28).
 
 ## Non-negotiables (brief 3, 12.4)
 - No `GS_RGBA` intermediate for non-SRGB spaces; no `saturate`/`max(rgb,0)` in HDR paths.
@@ -27,3 +30,5 @@ lock-step). P3 tonal zones implemented; user-directed changes (4 Oct): seven zon
 (Midtones added), handover chain Dark..Highlight at -4/-1/+1/+3 (weights sum to 1), Specular full
 from +5; schema 4, older settings not migrated (user will regrade). Offset (user-directed,
 before Grade Mix) and P3b soft clips done. Next: P4/P5 only after the user's go-ahead.
+Denoise: P0 implemented (main-rendered hook, main-mix + frame-time dedupe, Identity pass,
+counters, Tools menu controller); gates D-G0..D-G3 NOT RUN. Next: P1 only after P0 passes in OBS.

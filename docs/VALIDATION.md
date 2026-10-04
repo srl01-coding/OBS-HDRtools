@@ -148,6 +148,23 @@ Setup as P2. Figures for gray reference 18 nits, 1000-nit peak, schema-4 default
 | S8 | Both clips on, low knee typed above the high knee | status line shows CONFLICT, picture keeps the previous curves, log warning; fixing the value clears it | NOT RUN |
 | S9 | Save, restart | offset and clip settings restored | NOT RUN |
 
+
+### Program denoise P0 (denoise brief v1.2)
+
+Setup: test profile; HLG canvas as above. Program scene = `HDR Toolkit: Test Pattern
+(developer)`, mode *HLG levels only*. Scope: obs-color-monitor waveform/histogram with
+target **Program** (not *Main view*). Tools > *HDR Program Denoise...*: enable *Log frame
+counters every 10 s*.
+
+| ID | Test | Expected | Status |
+|---|---|---|---|
+| D-G0 | Plugin loads | log: `[denoise] program hook registered (once per unique main-canvas frame)`; Tools menu shows *HDR Program Denoise...*; no `[denoise] failed to compile` after choosing Identity; first Identity frame logs `[denoise] program frame 3840x2160 RGBA16F, canvas colour space Rec.2100 HLG, SDR white 203 nits, HDR nominal peak 1000 nits` | NOT RUN |
+| D-G1a | Algorithm Off, 30 s, preview only | periodic lines: `unique_program_frames` rises ~300 per 10 s at 30 fps and tracks `obs_total_frames`; `denoise_dispatches=0` | NOT RUN |
+| D-G1b | Algorithm Identity, preview + recording (+ streaming if possible), *Reset counters*, wait 30 s, *Log counters now* | `denoise_dispatches == unique_program_frames` (`dispatches == unique frames: OK`), `unique_program_frames` = `obs_total_frames` (+-1), `history_updates=0`; opening a projector / multiview does not change the rate | NOT RUN |
+| D-G1c | As D-G1b with the recording set to *Rescale output* (a second mix) | `other_mix_skipped` now rises ~30/s; dispatches still == unique frames; the recording is denoise-processed (P0: identical) | NOT RUN |
+| D-G2 | Identity vs Off on *HLG levels only* | identical scope: 0% 64, 10% 152, 20% 239, 30% 327, 40% 414, 50% 502, 60% 590, 70% 677, 75% 721, 80% 765, 90% 852, 100% 940, 105% ~984, 109% ~1019; no hue or alpha change, no new banding | NOT RUN |
+| D-G3 | Identity, Chart mode, Studio Mode: transition between the pattern scene and another scene (cut and fade) | Program monitor, scope and recording show the transition unchanged; no frame skipped or doubled (counter check as D-G1b) | NOT RUN |
+
 ## Layer 3 - production path
 
 | ID | Test | Status |

@@ -9,6 +9,10 @@ HDR-safe video filters for OBS Studio, working in OBS's linear HDR space without
   saturation, colour-balance wheel, seven tonal zones, linear offset, Grade Mix,
   and low / high soft clip.
 
+* **HDR Program Denoise** (Tools menu, in development) - processes the finished
+  program picture once per frame after transitions. P0 build: only an Identity
+  transparency test; HQDN3D and NLMeans follow.
+
 Developer tools in the same package: **HDR Toolkit: Test Pattern (developer)**
 (exact HDR values: neutral patches 0-10,000 nits, log ramp, HLG 0-109% levels,
 wide-gamut colours, alpha fixtures; no video decode) and **HDR Toolkit: Neutral
@@ -70,6 +74,7 @@ other plugins.
 * `docs/COLOR_PIPELINE.md` - colour-space, units and alpha contract
 * `docs/STREAMFX_REFERENCE.md` - StreamFX provenance and licence audit
 * `docs/PARAMETER_SCHEMA.md` - every saved setting, defaults and ranges
+* `docs/denoise/` - program denoise brief and design notes
 * `docs/VALIDATION.md` - PASS / FAIL / NOT RUN table
 
 ## Licence

@@ -50,6 +50,7 @@ target_sources(
     src/color/color-math.cpp
     src/color/color-math.hpp
     src/color/color-filter.cpp
+    src/denoise/program-denoise.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

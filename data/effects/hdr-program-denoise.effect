@@ -1,0 +1,41 @@
+// OBS HDR Toolkit - program denoise (P0: identity pass)
+// Copyright (C) 2026 srl01-coding, GPL-2.0-or-later
+//
+// Runs on the finished program frame (OBS main texture, native canvas space,
+// RGBA16F on an HDR canvas). Identity: an exact texel copy with Load (no
+// filtering, no colour conversion, no clamp), drawn back into the main texture
+// with blending and framebuffer sRGB off. It proves the hook is transparent
+// before any denoise maths is added.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 tex_size = {3840.0, 2160.0};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertInOut VSDefault(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float4 PSIdentity(VertInOut vert_in) : TARGET
+{
+	// uv at a pixel centre is (x + 0.5) / w, so this truncates to the exact texel
+	int2 p = int2(vert_in.uv * tex_size);
+	return image.Load(int3(p, 0));
+}
+
+technique Identity
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSIdentity(vert_in);
+	}
+}
