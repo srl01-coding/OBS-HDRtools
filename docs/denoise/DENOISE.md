@@ -131,8 +131,38 @@ section 8. Quality objective: `QUALITY_OBJECTIVE.md`.
   equivalent at matched noise reduction (`HQDN3D_DESIGN.md` 8.6). Real camera noise is
   spatially correlated, so footage decides.
 
-## Later packages (from the brief, not started)
+## Roadmap (revised 4 Oct 2026)
 
-* P3 NLMeans: decision sections 19-20. The patch-distance reuse formulation runs on the
-  compute infrastructure from the P2 spike. Light / Balanced / High tiers. High may
-  target RTX 3070-class hardware.
+Governing documents, in order:
+- `BRIEF_v1.2.md`;
+- `P2_DECISION_RESPONSE.md`;
+- `ROADMAP_CORRECTION_MOTION_AWARE.md`;
+- `P2_5_AMENDMENT.md`, which supersedes the P2.5 section of the roadmap correction.
+
+```text
+P0    final-program HDR-safe plumbing                         done
+P1    HQDN3D temporal                                         built; OBS gates NOT RUN
+P2    HQDN3D spatial B + D3D11 compute spike (+ A if safe)   B and spike built; A CPU only
+P2.5  premium temporal comparison
+      A  Temporal NLMeans: one engine, candidates (dx, dy, dt), dt in {0, -1}, causal
+      B  NVOFA motion-compensated temporal: capability probe, flow, warp, confidence
+      C  comparison gate: HQDN3D vs Temporal NLMeans vs NVOFA (synthetic, real footage,
+         GPU cost, same-bitrate HEVC / YouTube)
+P3    optimise the winning premium architecture; spatial NLMeans only where it adds value
+P4    tune combined production modes; codec/YouTube A/B
+```
+
+What can be done before P1/P2 run in OBS (CPU only, no GPU here):
+- the shared NLMeans design (`NLMEANS_DESIGN.md`);
+- CPU references for spatial and temporal NLMeans;
+- the synthetic motion/noise comparison of all temporal candidates, with NVOFA
+  represented by ideal (oracle) flow and a 4x4-grid oracle, which bound what hardware
+  flow can achieve;
+- real-footage experiments on the sample clip (`NOISE_MODEL.md`);
+- a same-bitrate x265 test against a clean reference.
+
+Everything that touches the GPU waits for the compute spike (CS gates) and P1 on real
+footage. That includes the NLMeans compute kernels and the NVOFA integration. The NVOFA
+capability probe is the exception, because it only queries the driver.
+
+`MOTION_AWARE_TEMPORAL.md` holds the design notes and results for P2.5.
