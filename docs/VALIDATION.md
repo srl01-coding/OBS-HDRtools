@@ -44,7 +44,7 @@ evidence for every result; never infer a result from a different layer.
 | ID | Test | Status | Evidence |
 |---|---|---|---|
 | B1 | Sources compile against OBS 32.2.2 headers (`g++ -fsyntax-only -Wall -Wextra`) | PASS | no diagnostics (re-run 2026-10-04 with P2 sources) |
-| B2 | CI Windows x64 build (OBS 31.1.1 SDK) | PASS | P3 zones: run 37166894772, commit 4f7f8f13f, artifact `obs-hdr-toolkit-0.1.0-windows-x64-4f7f8f13f` (P2: run 37165577267) |
+| B2 | CI Windows x64 build (OBS 31.1.1 SDK) | PASS | schema 2 zones: run 37168271759, commit b8c037e70, artifact `obs-hdr-toolkit-0.1.0-windows-x64-b8c037e70` (P3 zones: 37166894772; P2: 37165577267) |
 | B3 | CI macOS / Ubuntu builds, clang-format 19 + gersemi checks | PASS | same run; builds are not a macOS/Linux support claim (nothing run there) |
 
 ## Layer 2 - OBS / GPU (requires the user's machine)
