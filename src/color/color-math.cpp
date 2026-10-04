@@ -262,7 +262,7 @@ ZoneParams default_zone(int zone)
 		{-6, -3, -1, 2},    // Shadow
 		{-2, 1, 2, 5},      // Light
 		{0, 3, 5, 8},       // Highlight: in from 0, full from +3, open above
-		{3, 6, 8, 9},       // Specular: in from +3, full from +6, open above
+		{3, 5, 8, 9},       // Specular: in from +3, full from +5 (schema 3), open above
 	};
 	ZoneParams z;
 	z.a = e[zone][0];

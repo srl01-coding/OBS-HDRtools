@@ -32,11 +32,11 @@ Not yet in the schema (later packages, additive with defaults matching v1
 behaviour): `transform_mode` (Corner Pin / Perspective 3D / Orthographic 3D),
 3D parameters, `edge_aa`, pixel / legacy-centred unit display.
 
-## hdr_toolkit_color_v1 (schema_version 2: global stages, tonal zones, offset, soft clips)
+## hdr_toolkit_color_v1 (schema_version 3: global stages, tonal zones, offset, soft clips)
 
 | Key | Type | Default | UI range | Meaning |
 |---|---|---|---|---|
-| `schema_version` | int | 2 | | Written explicitly (user value) since schema 2. 1 = P2 build and first zones build |
+| `schema_version` | int | 3 | | Written explicitly (user value) since schema 2. 1 = P2 build and first zones build; 2 = open-ended Dark/Highlight, 3-stop falloffs; 3 = Specular full from +5 |
 | `global_exposure_ev` | double | 0 | -6..6 | Linear gain 2^EV |
 | `contrast_factor` | double | 1 | 0.5..2 | Power k on luminance around the pivot: `Y' = pivot (Y/pivot)^k`, applied as an RGB gain (hue/ratio preserving, sign-safe) |
 | `pivot_nits` | double | 18 | 0.1..1000 | Contrast pivot in nominal nits |
@@ -72,8 +72,10 @@ behaviour): `transform_mode` (Corner Pin / Perspective 3D / Orthographic 3D),
 | `zone_<z>_open_low`, `_open_high` | bool | Dark low = true, Highlight high = true, others false | | Interior zones only (Black is always open below, Specular always open above). Open side: weight 1 all the way to black (incl. Y <= 0) / to any peak; the stored edges on that side are kept for re-closing but unused |
 | `zone_<z>_center`, `_width`, `_fall_lo`, `_fall_hi`, `_full_below`, `_full_above` | double | from edges | | UI mirror, all derived from the edges: centre = (b+c)/2, width = c-b, fall_lo = b-a, fall_hi = d-c, full_below = c, full_above = b. Each UI field writes through only the edges it controls. Visible fields depend on the open flags |
 
-Schema 2 default edges (stops; user-directed 4 Oct 2026, departing from the brief
-7.1 table: Dark and Highlight open-ended, 3-stop falloffs for wider overlap):
+Default edges (stops; user-directed 4 Oct 2026, departing from the brief 7.1
+table: Dark and Highlight open-ended, 3-stop falloffs for wider overlap; schema 3:
+Specular full from +5 so it reaches full strength on camera material topping out
+near HLG 100% = +5.8):
 
 | Zone | Open | Fade in | Full | Fade out |
 |---|---|---|---|---|
@@ -82,9 +84,9 @@ Schema 2 default edges (stops; user-directed 4 Oct 2026, departing from the brie
 | Shadow | | -6..-3 | -3..-1 | -1..+2 |
 | Light | | -2..+1 | +1..+2 | +2..+5 |
 | Highlight | above | 0..+3 | from +3 | - |
-| Specular | above | +3..+6 | from +6 | - |
+| Specular | above | +3..+5 | from +5 | - |
 
-At an 18-nit gray: -8 = 0.07, -4 = 1.125, 0 = 18, +2 = 72, +4 = 288, +6 = 1152 nits.
+At an 18-nit gray: -8 = 0.07, -4 = 1.125, 0 = 18, +2 = 72, +4 = 288, +5 = 576 (HLG 92%, code 871), +6 = 1152 nits.
 Closed fall-back edges for the open sides: Dark a, b = -9, -6; Highlight c, d = 5, 8.
 
 Migration 1 -> 2 (on create): settings without a `schema_version` user value that
@@ -92,7 +94,10 @@ contain any zone key (written by the first zones build, which always saved its U
 mirror) get every unset canonical edge pinned to the schema-1 default (brief 7.1
 table), open flags set false, and the obsolete `zone_black/specular_boundary`,
 `_falloff` keys removed. P2-build settings have no zone keys and all zones
-neutral, so the new defaults cannot change them. Then `schema_version` = 2.
+neutral, so the new defaults cannot change them.
+
+Migration 2 -> 3: Specular `a`, `b` left at their defaults are pinned to the
+schema-2 values (3, 6). Then `schema_version` = 3.
 
 Window: `w = smooth01((s-a)/(b-a)) * (1 - smooth01((s-c)/(d-c)))`, smooth01 =
 smoothstep on the clamped mask coordinate; `s = log2(max(Y, 1e-6) / gray)`, so

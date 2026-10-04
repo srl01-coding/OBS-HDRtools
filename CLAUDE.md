@@ -24,5 +24,6 @@ P0 done (G0, N1 qualitative, N3b observed in OBS 32.2.2). P1 Corner Pin implemen
 (transform-filter.cpp; shader mirrored in quad-math.cpp - keep in lock-step). P2 global Color
 implemented (color-filter.cpp; hdr-color.effect mirrored in color-math.cpp shader_grade - keep in
 lock-step). P3 tonal zones implemented (user asked for Resolve-style zones, 4 Oct); schema 2 (user-directed):
-Dark open to black, Highlight open to peak, 3-stop falloffs, migration from 1. Offset (user-directed,
+Dark open to black, Highlight open to peak, 3-stop falloffs, migration from 1; schema 3: Specular full
+from +5 (migration from 2). Offset (user-directed,
 before Grade Mix) and P3b soft clips done. Next: P4/P5 only after the user's go-ahead.

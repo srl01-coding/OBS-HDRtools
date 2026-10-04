@@ -116,8 +116,9 @@ struct ZoneParams {
 	}
 };
 
-// Defaults (schema 2, user-directed 4 Oct 2026): Dark open to black, Highlight
-// open to peak, 3-stop falloffs (wider overlap than the brief 7.1 table).
+// Defaults (user-directed 4 Oct 2026): Dark open to black, Highlight open to
+// peak, 3-stop falloffs (wider overlap than the brief 7.1 table); Specular full
+// from +5 stops so it reaches full strength on camera material (schema 3).
 ZoneParams default_zone(int zone);
 std::array<ZoneParams, kZoneCount> default_zones();
 // Schema 1 defaults (brief 7.1 table, all interior zones closed). Used only to

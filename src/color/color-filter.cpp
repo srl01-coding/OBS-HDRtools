@@ -58,7 +58,8 @@ using hdrtk::color::ZoneParams;
 
 // 1: P2 build and first zones build (brief 7.1 zone defaults).
 // 2: zone open ends; Dark open to black, Highlight open to peak, 3-stop falloffs.
-constexpr int kSchemaVersion = 2;
+// 3: Specular full strength from +5 stops (was +6), still fading in from +3.
+constexpr int kSchemaVersion = 3;
 constexpr float kAlphaEpsilon = 1e-6f;
 
 enum DiagView { DiagOff = 0, DiagZoneMask = 1, DiagAllZones = 2 };
@@ -439,15 +440,32 @@ const char *const kZoneSuffixes[] = {"enabled", "exposure_ev", "saturation", "wh
 				     "c",       "d",           "open_low",   "open_high", "center",  "width", "fall_lo",
 				     "fall_hi", "full_below",  "full_above", "boundary",  "falloff"};
 
+// Default zone edges change between schemas; a saved grade must keep its look
+// (brief 10.4), so edges the scene left at the old default are pinned to it.
 // Scenes saved before schema 2 carry no schema_version user value. Those saved by
 // the first zones build (they have zone keys: that build always wrote the UI
-// mirror) get their schema-1 zone ranges pinned, so installing this build does
-// not change their look (brief 10.4). P2-build scenes have no zone keys and all
-// zones neutral, so the new defaults cannot change them.
+// mirror) get their schema-1 zone ranges pinned. P2-build scenes have no zone
+// keys and all zones neutral, so the new defaults cannot change them.
+// Schema-2 scenes get the schema-2 Specular edges pinned.
 void migrate_settings(obs_data_t *s, obs_source_t *source)
 {
-	if (obs_data_has_user_value(s, "schema_version") && obs_data_get_int(s, "schema_version") >= kSchemaVersion)
+	const bool versioned = obs_data_has_user_value(s, "schema_version");
+	const long long saved = versioned ? obs_data_get_int(s, "schema_version") : 1;
+	if (saved >= kSchemaVersion)
 		return;
+	if (saved == 2) {
+		const int sp = hdrtk::color::ZoneSpecular;
+		const double v2[2] = {3.0, 6.0}; // schema-2 Specular a, b
+		const char *k[2] = {"a", "b"};
+		for (int j = 0; j < 2; j++)
+			if (!obs_data_has_user_value(s, zkey(sp, k[j]).c_str()))
+				obs_data_set_double(s, zkey(sp, k[j]).c_str(), v2[j]);
+		obs_log(LOG_INFO,
+			"[color] '%s': settings from schema 2 - kept their Specular range (migrated to schema %d)",
+			obs_source_get_name(source), kSchemaVersion);
+		obs_data_set_int(s, "schema_version", kSchemaVersion);
+		return;
+	}
 	bool zone_keys = false;
 	for (int i = 0; i < kZoneCount && !zone_keys; i++)
 		for (const char *suffix : kZoneSuffixes)

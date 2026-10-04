@@ -267,7 +267,7 @@ int main(int argc, char **argv)
 		std::printf("zone windows: max weight change per 0.001 stop %.3g\n", max_jump);
 		CHECK(max_jump < 0.0011, "zone window discontinuity");
 		// Full-strength plateaus and zeros outside (schema 2 defaults; NAN = open end).
-		const double full[kZoneCount] = {-8, -4, -2, 1.5, 3, 6};
+		const double full[kZoneCount] = {-8, -4, -2, 1.5, 3, 5};
 		const double zero_lo[kZoneCount] = {NAN, NAN, -6, -2, 0, 3};
 		const double zero_hi[kZoneCount] = {-4, -1, 2, 5, NAN, NAN};
 		for (int i = 0; i < kZoneCount; i++) {

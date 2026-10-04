@@ -113,8 +113,9 @@ waveform in RGB parade for H5. Settle sliders by typing values.
 
 ### P3 - HDR Color tonal zones
 
-Setup as P2. Figures for gray reference 18 nits, 1000-nit peak, schema-2 default
-zone ranges (Dark open to black, Highlight open to peak, 3-stop falloffs).
+Setup as P2. Figures for gray reference 18 nits, 1000-nit peak, schema-3 default
+zone ranges (Dark open to black, Highlight open to peak, 3-stop falloffs, Specular
+full from +5). Only Specular changed in schema 3; the Z3-Z6b figures do not involve it.
 
 | ID | Test | Expected | Status |
 |---|---|---|---|
@@ -131,6 +132,7 @@ zone ranges (Dark open to black, Highlight open to peak, 3-stop falloffs).
 | Z10 | Save, restart OBS | all zone values, enables and open flags restored; scope identical | NOT RUN |
 | Z11 | Migration: a scene collection saved with build 4f7f8f13f that has a zone adjustment, opened with this build | looks identical to before (log: `settings from schema 1 - kept their zone ranges`); its Dark/Highlight are not open-ended | NOT RUN |
 | Z12 | Global exposure +1 EV with diagnostic *All zones* | colour bands shift one stop down the picture (masks follow global exposure by design) | NOT RUN |
+| Z13 | Migration: a scene saved with build 525333391 (schema 2) that uses Specular, opened with this build | looks identical (log: `settings from schema 2 - kept their Specular range`); a new HDR Color instance has Specular full from +5 (mask view, Specular, HLG levels: 75% bar w 0.15, 80% w 0.46, 90% w 0.99, 100% w 1) | NOT RUN |
 
 
 ### Offset and soft clip
