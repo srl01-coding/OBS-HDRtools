@@ -2,7 +2,10 @@
 input stops"). Usage:
 
     ./test_color --dump-zones > zones.txt
-    python3 tests/cpu/plot_zones.py zones.txt zones.png [gray_nits]
+    python3 tests/cpu/plot_zones.py zones.txt docs/images/zone-windows.png [gray_nits]
+
+The axis runs from -9 stops (below that is camera noise; Black and Dark carry on
+down to true black) to OBS's HLG encode ceiling, 10-bit code 1023.
 """
 import sys
 import numpy as np
@@ -37,7 +40,8 @@ for _ in range(100):
     lo_n, hi_n = (mid, hi_n) if 64 + 8.76 * hlg_pct(mid) < 1023 else (lo_n, mid)
 ceiling_nits = lo_n
 ceiling_stop = np.log2(ceiling_nits / gray)
-ticks = list(np.arange(-12, ceiling_stop - 0.4, 2)) + [ceiling_stop]
+LEFT = -9.0
+ticks = [-9, -7, -5, -4, -3, -1, 0, 1, 2, 3, 4, 5, ceiling_stop]
 ax.set_xticks(ticks)
 
 
@@ -63,7 +67,7 @@ ax.set_xticklabels([tick_label(t) for t in ticks], fontsize=8)
 ax.set_xlabel(f"stops from gray ({gray:g} nits)  /  nits  /  HLG % (1000-nit peak)  /  10-bit code (narrow range)", fontsize=9)
 ax.set_ylabel("zone weight")
 ax.set_ylim(-0.02, 1.08)
-ax.set_xlim(d[0, 0], ceiling_stop)
+ax.set_xlim(LEFT, ceiling_stop)
 ax.grid(alpha=0.25)
 ax.legend(ncol=7, loc="upper center", fontsize=8, frameon=False, bbox_to_anchor=(0.5, 1.12))
 fig.tight_layout()
