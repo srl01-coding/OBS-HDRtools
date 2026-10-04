@@ -240,7 +240,7 @@ static void clampv(double &v, double lo, double hi, double def, const char *name
 	}
 }
 
-const char *const kZoneNames[kZoneCount] = {"black", "dark", "shadow", "light", "highlight", "specular"};
+const char *const kZoneNames[kZoneCount] = {"black", "dark", "shadow", "midtones", "light", "highlight", "specular"};
 
 bool zone_fixed_open_low(int zone)
 {
@@ -257,12 +257,13 @@ ZoneParams default_zone(int zone)
 	// Stops from gray_nits. Closed fall-back edges are given for open sides so
 	// that unticking "open" gives a sensible window.
 	static const double e[kZoneCount][4] = {
-		{-12, -11, -8, -4}, // Black: open below, full to -8, out by -4
-		{-9, -6, -4, -1},   // Dark: open below, full to -4, out by -1
-		{-6, -3, -1, 2},    // Shadow
-		{-2, 1, 2, 5},      // Light
-		{0, 3, 5, 8},       // Highlight: in from 0, full from +3, open above
-		{3, 5, 8, 9},       // Specular: in from +3, full from +5 (schema 3), open above
+		{-12, -11, -7, -5},         // Black: open below, full to -7, out by -5
+		{-9, -7, -5, -3},           // Dark: open below, full to -5, handover -4
+		{-5, -3, -1.75, -0.25},     // Shadow: handovers -4 and -1
+		{-1.75, -0.25, 0.25, 1.75}, // Midtones: handovers -1 and +1, flat top 0.5 stop
+		{0.25, 1.75, 2.25, 3.75},   // Light: handovers +1 and +3, flat top 0.5 stop
+		{2.25, 3.75, 5, 7},         // Highlight: handover +3, open above
+		{3, 5, 8, 9},               // Specular: in from +3, full from +5, open above
 	};
 	ZoneParams z;
 	z.a = e[zone][0];
@@ -271,21 +272,6 @@ ZoneParams default_zone(int zone)
 	z.d = e[zone][3];
 	z.open_low = zone == ZoneBlack || zone == ZoneDark;
 	z.open_high = zone == ZoneHighlight || zone == ZoneSpecular;
-	return z;
-}
-
-ZoneParams default_zone_v1(int zone)
-{
-	static const double e[kZoneCount][4] = {
-		{-12, -11, -7, -4}, {-7, -5, -3, -1}, {-4, -2, 0, 2}, {-1, 1, 2, 4}, {2, 3.5, 4.5, 6}, {4.5, 6, 8, 9},
-	};
-	ZoneParams z;
-	z.a = e[zone][0];
-	z.b = e[zone][1];
-	z.c = e[zone][2];
-	z.d = e[zone][3];
-	z.open_low = zone_fixed_open_low(zone);
-	z.open_high = zone_fixed_open_high(zone);
 	return z;
 }
 
@@ -626,7 +612,7 @@ std::array<float, 3> shader_grade(const ShaderParams &s, const std::array<float,
 	for (float &x : c)
 		x *= s.exposure_gain;
 
-	float w[kZoneCount] = {0, 0, 0, 0, 0, 0};
+	float w[kZoneCount] = {};
 	if (s.use_zones > 0.5f) {
 		const float sm = std::log2(std::max(luma(c), 0.000001f) / s.gray_nits);
 		float zev = 0.0f;

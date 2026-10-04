@@ -80,8 +80,9 @@ Vec3 wheel_delta(double x, double y, double k = 0.5);
 
 // ---- Tonal zones (brief 7.1) -------------------------------------------------
 
-constexpr int kZoneCount = 6;
-enum Zone { ZoneBlack = 0, ZoneDark, ZoneShadow, ZoneLight, ZoneHighlight, ZoneSpecular };
+// Seven zones (user-directed 4 Oct 2026: Midtones added to the brief's six).
+constexpr int kZoneCount = 7;
+enum Zone { ZoneBlack = 0, ZoneDark, ZoneShadow, ZoneMidtones, ZoneLight, ZoneHighlight, ZoneSpecular };
 // Stable machine names used in settings keys (zone_<name>_...).
 extern const char *const kZoneNames[kZoneCount];
 
@@ -116,14 +117,13 @@ struct ZoneParams {
 	}
 };
 
-// Defaults (user-directed 4 Oct 2026): Dark open to black, Highlight open to
-// peak, 3-stop falloffs (wider overlap than the brief 7.1 table); Specular full
-// from +5 stops so it reaches full strength on camera material (schema 3).
+// Defaults (user-directed 4 Oct 2026). Dark, Shadow, Midtones, Light and Highlight
+// hand over at -4 / -1 / +1 / +3 stops with each pair sharing one mirrored fade
+// (2 stops at -4, 1.5 stops elsewhere), so their weights sum to exactly 1:
+// equal pushes on neighbours are an even push, with no doubling at the seams.
+// Black (full <= -7) and Specular (full >= +5) sit on top of Dark / Highlight.
 ZoneParams default_zone(int zone);
 std::array<ZoneParams, kZoneCount> default_zones();
-// Schema 1 defaults (brief 7.1 table, all interior zones closed). Used only to
-// migrate scenes saved by the first zones build.
-ZoneParams default_zone_v1(int zone);
 bool zone_fixed_open_low(int zone);  // Black
 bool zone_fixed_open_high(int zone); // Specular
 

@@ -267,9 +267,9 @@ int main(int argc, char **argv)
 		std::printf("zone windows: max weight change per 0.001 stop %.3g\n", max_jump);
 		CHECK(max_jump < 0.0011, "zone window discontinuity");
 		// Full-strength plateaus and zeros outside (schema 2 defaults; NAN = open end).
-		const double full[kZoneCount] = {-8, -4, -2, 1.5, 3, 5};
-		const double zero_lo[kZoneCount] = {NAN, NAN, -6, -2, 0, 3};
-		const double zero_hi[kZoneCount] = {-4, -1, 2, 5, NAN, NAN};
+		const double full[kZoneCount] = {-8, -6, -2.5, 0, 2, 4, 5};
+		const double zero_lo[kZoneCount] = {NAN, NAN, -5, -1.75, 0.25, 2.25, 3};
+		const double zero_hi[kZoneCount] = {-5, -3, -0.25, 1.75, 3.75, NAN, NAN};
 		for (int i = 0; i < kZoneCount; i++) {
 			CHECK(w(i, full[i]) == 1, "zone %s not full strength at %g", kZoneNames[i], full[i]);
 			if (!std::isnan(zero_lo[i]))
@@ -299,8 +299,29 @@ int main(int argc, char **argv)
 				if (w(i, st) > 0 && w(i + 1, st) > 0)
 					both += 0.01;
 			}
-			CHECK(both >= 2.0, "%s/%s overlap only %.2f stops", kZoneNames[i], kZoneNames[i + 1], both);
+			CHECK(both >= 1.4, "%s/%s overlap only %.2f stops", kZoneNames[i], kZoneNames[i + 1], both);
 		}
+		// Handover chain Dark..Highlight is a partition of unity: weights sum to 1.
+		double max_dev = 0;
+		for (int k = 0; k <= 60000; k++) {
+			const double st = -30 + 60.0 * k / 60000.0;
+			double sum = 0;
+			for (int i = ZoneDark; i <= ZoneHighlight; i++)
+				sum += w(i, st);
+			max_dev = std::fmax(max_dev, std::fabs(sum - 1));
+		}
+		std::printf("Dark..Highlight weight sum: max deviation from 1 = %.3g\n", max_dev);
+		CHECK(max_dev < 1e-12, "handover chain not a partition of unity");
+		// Equal pushes on every chain zone = an even push.
+		GlobalParams ev;
+		for (int i = ZoneDark; i <= ZoneHighlight; i++)
+			ev.zones[i].exposure_ev = 0.7;
+		double max_even = 0;
+		for (int k = 0; k <= 2000; k++) {
+			const double y = 18.0 * std::exp2(-12 + 20.0 * k / 2000.0);
+			max_even = std::fmax(max_even, rel(reference_grade(ev, Vec3{y, y, y})[0], y * std::exp2(0.7)));
+		}
+		CHECK(max_even < 1e-12, "equal neighbour pushes not even (%g)", max_even);
 		CHECK(std::isfinite(tonal_stop(-1, 18)) && std::isfinite(tonal_stop(0, 18)), "tonal stop of Y<=0");
 		// Stop markers from the brief: -4 = 1.125, 0 = 18, +2 = 72, +4 = 288, +6 = 1152 nits.
 		CHECK(std::fabs(tonal_stop(1.125, 18) + 4) < 1e-12 && std::fabs(tonal_stop(1152, 18) - 6) < 1e-12,
@@ -337,13 +358,13 @@ int main(int argc, char **argv)
 
 		// Overlap combines in EV: weights not normalised.
 		GlobalParams q;
-		q.zones[ZoneShadow].exposure_ev = 1;
+		q.zones[ZoneMidtones].exposure_ev = 1;
 		q.zones[ZoneLight].exposure_ev = 0.5;
-		const double yo = 18.0 * std::exp2(0.0); // inside both windows
+		const double yo = 18.0 * std::exp2(1.2); // inside both windows
 		const auto wo = reference_weights(q, Vec3{yo, yo, yo});
-		CHECK(wo[ZoneShadow] > 0 && wo[ZoneLight] > 0, "overlap fixture");
+		CHECK(wo[ZoneMidtones] > 0 && wo[ZoneLight] > 0, "overlap fixture");
 		const Vec3 ro = reference_grade(q, Vec3{yo, yo, yo});
-		CHECK(rel(ro[0], yo * std::exp2(wo[ZoneShadow] * 1 + wo[ZoneLight] * 0.5)) < 1e-12, "overlap EV sum");
+		CHECK(rel(ro[0], yo * std::exp2(wo[ZoneMidtones] * 1 + wo[ZoneLight] * 0.5)) < 1e-12, "overlap EV sum");
 
 		// Inactive / changed zones do not alter another zone's strength.
 		GlobalParams a, b2;
@@ -440,7 +461,7 @@ int main(int argc, char **argv)
 		const std::string log = sanitize(p);
 		const auto &z = p.zones[ZoneShadow];
 		CHECK(z.b == 1 + kMinFalloff && z.c == z.b && z.d == z.c + kMinFalloff, "interior reorder");
-		CHECK(p.zones[ZoneBlack].d == -8 + kMinFalloff, "black reorder");
+		CHECK(p.zones[ZoneBlack].d == -7 + kMinFalloff, "black reorder");
 		CHECK(p.zones[ZoneSpecular].a == 3, "non-finite edge not reset");
 		double e[4];
 		p.zones[ZoneBlack].effective_edges(e);
@@ -504,7 +525,7 @@ int main(int argc, char **argv)
 				      1.1 * lim);
 			}
 		}
-		std::printf("zone tonal-order limit |EV| <= falloff/1.5 confirmed for all six default zones\n");
+		std::printf("zone tonal-order limit |EV| <= falloff/1.5 confirmed for all default zones\n");
 	}
 
 	// 10. Offset and soft clips (brief 8).

@@ -24,27 +24,30 @@ uniform float3 wheel_delta = {0.0, 0.0, 0.0};
 uniform float saturation = 1.0;
 uniform float grade_mix = 1.0;
 
-// Tonal zones 0..5 = Black, Dark, Shadow, Light, Highlight, Specular.
+// Tonal zones 0..6 = Black, Dark, Shadow, Midtones, Light, Highlight, Specular.
 // edges = (a, b, c, d) in stops from gray_nits; es = (exposure EV, saturation);
 // wd = wheel delta (k * r * direction, precomputed). Disabled zones are neutral.
-uniform float4 zone_edges0 = {-1000.0, -999.0, -7.0, -4.0};
-uniform float4 zone_edges1 = {-7.0, -5.0, -3.0, -1.0};
-uniform float4 zone_edges2 = {-4.0, -2.0, 0.0, 2.0};
-uniform float4 zone_edges3 = {-1.0, 1.0, 2.0, 4.0};
-uniform float4 zone_edges4 = {2.0, 3.5, 4.5, 6.0};
-uniform float4 zone_edges5 = {4.5, 6.0, 1000.0, 1001.0};
+uniform float4 zone_edges0 = {-1000.0, -999.0, -7.0, -5.0};
+uniform float4 zone_edges1 = {-1000.0, -999.0, -5.0, -3.0};
+uniform float4 zone_edges2 = {-5.0, -3.0, -1.75, -0.25};
+uniform float4 zone_edges3 = {-1.75, -0.25, 0.25, 1.75};
+uniform float4 zone_edges4 = {0.25, 1.75, 2.25, 3.75};
+uniform float4 zone_edges5 = {2.25, 3.75, 1000.0, 1001.0};
+uniform float4 zone_edges6 = {3.0, 5.0, 1000.0, 1001.0};
 uniform float2 zone_es0 = {0.0, 1.0};
 uniform float2 zone_es1 = {0.0, 1.0};
 uniform float2 zone_es2 = {0.0, 1.0};
 uniform float2 zone_es3 = {0.0, 1.0};
 uniform float2 zone_es4 = {0.0, 1.0};
 uniform float2 zone_es5 = {0.0, 1.0};
+uniform float2 zone_es6 = {0.0, 1.0};
 uniform float3 zone_wd0 = {0.0, 0.0, 0.0};
 uniform float3 zone_wd1 = {0.0, 0.0, 0.0};
 uniform float3 zone_wd2 = {0.0, 0.0, 0.0};
 uniform float3 zone_wd3 = {0.0, 0.0, 0.0};
 uniform float3 zone_wd4 = {0.0, 0.0, 0.0};
 uniform float3 zone_wd5 = {0.0, 0.0, 0.0};
+uniform float3 zone_wd6 = {0.0, 0.0, 0.0};
 
 // Diagnostics (technique Mask): 1 = one zone's weight as grey (1.0 = SDR white),
 // 2 = all zones in false colour. Computed from the frozen mask.
@@ -136,6 +139,7 @@ float3 grade_nits(float3 c_in)
 	float w3 = 0.0;
 	float w4 = 0.0;
 	float w5 = 0.0;
+	float w6 = 0.0;
 	if (use_zones > 0.5) {
 		float sm = tonal_stop(c);
 		w0 = zone_weight(sm, zone_edges0);
@@ -144,12 +148,14 @@ float3 grade_nits(float3 c_in)
 		w3 = zone_weight(sm, zone_edges3);
 		w4 = zone_weight(sm, zone_edges4);
 		w5 = zone_weight(sm, zone_edges5);
+		w6 = zone_weight(sm, zone_edges6);
 		float zev = w0 * zone_es0.x;
 		zev = zev + w1 * zone_es1.x;
 		zev = zev + w2 * zone_es2.x;
 		zev = zev + w3 * zone_es3.x;
 		zev = zev + w4 * zone_es4.x;
 		zev = zev + w5 * zone_es5.x;
+		zev = zev + w6 * zone_es6.x;
 		c = c * exp2(zev);
 	}
 
@@ -169,6 +175,7 @@ float3 grade_nits(float3 c_in)
 		d = d + w3 * zone_wd3;
 		d = d + w4 * zone_wd4;
 		d = d + w5 * zone_wd5;
+		d = d + w6 * zone_wd6;
 		float yw = max(luma(c), 0.0);
 		c = c + d * yw;
 	}
@@ -182,6 +189,7 @@ float3 grade_nits(float3 c_in)
 		st = st * (1.0 + w3 * (zone_es3.y - 1.0));
 		st = st * (1.0 + w4 * (zone_es4.y - 1.0));
 		st = st * (1.0 + w5 * (zone_es5.y - 1.0));
+		st = st * (1.0 + w6 * (zone_es6.y - 1.0));
 		float ys = luma(c);
 		c = float3(ys, ys, ys) + st * (c - float3(ys, ys, ys));
 	}
@@ -244,14 +252,16 @@ float4 PSMask(VertInOut vert_in) : TARGET
 	float w3 = zone_weight(sm, zone_edges3);
 	float w4 = zone_weight(sm, zone_edges4);
 	float w5 = zone_weight(sm, zone_edges5);
+	float w6 = zone_weight(sm, zone_edges6);
 	float3 outc;
 	if (diag_mode > 1.5) {
 		outc = w0 * float3(0.25, 0.3, 1.0);
 		outc = outc + w1 * float3(0.1, 0.65, 1.0);
 		outc = outc + w2 * float3(0.1, 0.8, 0.3);
-		outc = outc + w3 * float3(0.95, 0.85, 0.1);
-		outc = outc + w4 * float3(1.0, 0.45, 0.25);
-		outc = outc + w5 * float3(0.9, 0.15, 0.6);
+		outc = outc + w3 * float3(0.6, 0.6, 0.6);
+		outc = outc + w4 * float3(0.95, 0.85, 0.1);
+		outc = outc + w5 * float3(1.0, 0.45, 0.25);
+		outc = outc + w6 * float3(0.9, 0.15, 0.6);
 	} else {
 		float w = w0;
 		if (diag_zone > 0.5)
@@ -264,6 +274,8 @@ float4 PSMask(VertInOut vert_in) : TARGET
 			w = w4;
 		if (diag_zone > 4.5)
 			w = w5;
+		if (diag_zone > 5.5)
+			w = w6;
 		outc = float3(w, w, w);
 	}
 	// output in working units: 1.0 = SDR white

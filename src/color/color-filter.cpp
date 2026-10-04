@@ -56,10 +56,11 @@ using hdrtk::color::kZoneCount;
 using hdrtk::color::ShaderParams;
 using hdrtk::color::ZoneParams;
 
-// 1: P2 build and first zones build (brief 7.1 zone defaults).
-// 2: zone open ends; Dark open to black, Highlight open to peak, 3-stop falloffs.
-// 3: Specular full strength from +5 stops (was +6), still fading in from +3.
-constexpr int kSchemaVersion = 3;
+// 1-3: development builds (zone defaults changed each time). 4: seven zones
+// (Midtones added), handover defaults. Older settings are not migrated: the user
+// chose to regrade (4 Oct 2026); unknown keys are ignored and missing ones take
+// the current defaults.
+constexpr int kSchemaVersion = 4;
 constexpr float kAlphaEpsilon = 1e-6f;
 
 enum DiagView { DiagOff = 0, DiagZoneMask = 1, DiagAllZones = 2 };
@@ -72,8 +73,9 @@ struct Snapshot {
 	ShaderParams sp{};
 };
 
-const char *const kZoneLabels[kZoneCount] = {"Color.Zone.Black", "Color.Zone.Dark",      "Color.Zone.Shadow",
-					     "Color.Zone.Light", "Color.Zone.Highlight", "Color.Zone.Specular"};
+const char *const kZoneLabels[kZoneCount] = {"Color.Zone.Black",    "Color.Zone.Dark",  "Color.Zone.Shadow",
+					     "Color.Zone.Midtones", "Color.Zone.Light", "Color.Zone.Highlight",
+					     "Color.Zone.Specular"};
 
 std::string zkey(int zone, const char *suffix)
 {
@@ -309,8 +311,6 @@ gs_eparam_t *param(gs_effect_t *e, const char *name)
 	return p;
 }
 
-void migrate_settings(obs_data_t *s, obs_source_t *source);
-
 void *color_create(obs_data_t *settings, obs_source_t *source)
 {
 	auto *f = new ColorFilter();
@@ -372,7 +372,7 @@ void *color_create(obs_data_t *settings, obs_source_t *source)
 	bfree(errors);
 	bfree(path);
 
-	migrate_settings(settings, source);
+	obs_data_set_int(settings, "schema_version", kSchemaVersion);
 	color_update(f, settings);
 	return f;
 }
@@ -439,68 +439,6 @@ void color_defaults(obs_data_t *s)
 const char *const kZoneSuffixes[] = {"enabled", "exposure_ev", "saturation", "wheel_x",   "wheel_y", "a",     "b",
 				     "c",       "d",           "open_low",   "open_high", "center",  "width", "fall_lo",
 				     "fall_hi", "full_below",  "full_above", "boundary",  "falloff"};
-
-// Default zone edges change between schemas; a saved grade must keep its look
-// (brief 10.4), so edges the scene left at the old default are pinned to it.
-// Scenes saved before schema 2 carry no schema_version user value. Those saved by
-// the first zones build (they have zone keys: that build always wrote the UI
-// mirror) get their schema-1 zone ranges pinned. P2-build scenes have no zone
-// keys and all zones neutral, so the new defaults cannot change them.
-// Schema-2 scenes get the schema-2 Specular edges pinned.
-void migrate_settings(obs_data_t *s, obs_source_t *source)
-{
-	const bool versioned = obs_data_has_user_value(s, "schema_version");
-	const long long saved = versioned ? obs_data_get_int(s, "schema_version") : 1;
-	if (saved >= kSchemaVersion)
-		return;
-	if (saved == 2) {
-		const int sp = hdrtk::color::ZoneSpecular;
-		const double v2[2] = {3.0, 6.0}; // schema-2 Specular a, b
-		const char *k[2] = {"a", "b"};
-		for (int j = 0; j < 2; j++)
-			if (!obs_data_has_user_value(s, zkey(sp, k[j]).c_str()))
-				obs_data_set_double(s, zkey(sp, k[j]).c_str(), v2[j]);
-		obs_log(LOG_INFO,
-			"[color] '%s': settings from schema 2 - kept their Specular range (migrated to schema %d)",
-			obs_source_get_name(source), kSchemaVersion);
-		obs_data_set_int(s, "schema_version", kSchemaVersion);
-		return;
-	}
-	bool zone_keys = false;
-	for (int i = 0; i < kZoneCount && !zone_keys; i++)
-		for (const char *suffix : kZoneSuffixes)
-			if (obs_data_has_user_value(s, zkey(i, suffix).c_str())) {
-				zone_keys = true;
-				break;
-			}
-	if (zone_keys) {
-		for (int i = 0; i < kZoneCount; i++) {
-			const ZoneParams v1 = hdrtk::color::default_zone_v1(i);
-			auto pin = [&](const char *k, double v) {
-				if (!obs_data_has_user_value(s, zkey(i, k).c_str()))
-					obs_data_set_double(s, zkey(i, k).c_str(), v);
-			};
-			if (!low_tail(i)) {
-				pin("a", v1.a);
-				pin("b", v1.b);
-			}
-			if (!high_tail(i)) {
-				pin("c", v1.c);
-				pin("d", v1.d);
-			}
-			if (interior(i)) {
-				obs_data_set_bool(s, zkey(i, "open_low").c_str(), false);
-				obs_data_set_bool(s, zkey(i, "open_high").c_str(), false);
-			}
-			obs_data_unset_user_value(s, zkey(i, "boundary").c_str());
-			obs_data_unset_user_value(s, zkey(i, "falloff").c_str());
-		}
-		obs_log(LOG_INFO,
-			"[color] '%s': settings from schema 1 - kept their zone ranges (migrated to schema %d)",
-			obs_source_get_name(source), kSchemaVersion);
-	}
-	obs_data_set_int(s, "schema_version", kSchemaVersion);
-}
 
 void unset_zone(obs_data_t *s, int i)
 {

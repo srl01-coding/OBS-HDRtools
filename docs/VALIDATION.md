@@ -33,10 +33,10 @@ evidence for every result; never infer a result from a different layer.
 | C12 | `test_color.cpp`: exposure exact (+1 EV doubles, -1 halves); contrast fixes the pivot, follows `pivot*(Y/pivot)^k` over 1e-4..1e4 nits, monotonic, black stays black, negative Y finite | PASS | |
 | C13 | `test_color.cpp`: wheel hue directions luminance-orthogonal (0/120/240 deg = R/G/B); radius clamped at 1; wheel + saturation preserve linear Y; saturation 0 gives Y-neutral grey; black preserved by the full grade; Grade Mix 0 = original and linear | PASS | linear-Y error 6.1e-16 (5,000 random grades) |
 | C14 | `test_color.cpp`: float32 mirror of `hdr-color.effect` vs double reference, 20,000 random grades x colours 0.01-10,000 nits | PASS | max error 3.6e-6 of the pixel's largest channel; neutral params bit-exact |
-| C15 | `test_color.cpp`: zone windows continuous (max change 0.0005 per 0.001 stop over -30..30), weights in [0,1], full strength and zeros where the schema-2 table puts them; Black and Dark cover Y = 0, negative, 1e-30 and 0.01 nits; Highlight and Specular cover up to 1.2e7 nits; every adjacent pair overlaps >= 2 stops; brief stop markers | PASS | 2026-10-04 (schema 2 defaults). Plot: `plot_zones.py` |
+| C15 | `test_color.cpp`: zone windows continuous (max change 0.001 per 0.001 stop over -30..30), weights in [0,1], full strength and zeros where the schema-4 table puts them; Black and Dark cover Y = 0, negative, 1e-30 and 0.01 nits; Highlight and Specular cover up to 1.2e7 nits; adjacent pairs overlap >= 1.4 stops; Dark..Highlight weights sum to 1 (max deviation 0) and equal pushes on them equal a global push; brief stop markers | PASS | 2026-10-04 (schema 4, seven zones). Plot: `plot_zones.py` |
 | C16 | `test_color.cpp`: isolated zone gain = 2^(w EV) at the input mask (pure RGB scale, all six zones); frozen mask (Shadow +3 does not pick up Light -3 after the lift); overlap sums EV; neutral or disabled zones (incl. a widened neutral Light) leave another zone's response bit-identical | PASS | gain law error 0 |
 | C17 | `test_color.cpp`: zone saturation 0 desaturates fully at full weight and leaves out-of-window pixels bit-identical; zone wheel preserves Y and black; disabled zone keeps its value and is neutral; default zones enable no stage | PASS | |
-| C18 | `test_color.cpp`: float mirror of the zone shader vs double, 20,000 random global + six-zone grades with random open ends; edge sanitising (reorder, NaN reset, fixed open ends cannot close, an open side's unused edges never override a used edge, re-closing gives a valid window) | PASS | max error 8.9e-6 of the pixel's largest channel; all finite |
+| C18 | `test_color.cpp`: float mirror of the zone shader vs double, 20,000 random global + six-zone grades with random open ends; edge sanitising (reorder, NaN reset, fixed open ends cannot close, an open side's unused edges never override a used edge, re-closing gives a valid window) | PASS | max error 6.0e-6 of the pixel's largest channel; all finite |
 | C19 | `test_color.cpp`: tonal order kept for a push of 0.98 x falloff/1.5 and reversed at 1.1 x, every default zone, both directions | PASS | |
 | C20 | `test_color.cpp`: toe and shoulder reproduce the brief 8.2 / 8.3 tables; toe F(0)=0, F(L)=L, slope 1 at L, monotonic, never lifts, beta 0 exact identity (several L, beta); shoulder slope 1 at H, monotonic, stays below P over 0.01..1e7 nits (q 0.01..0.95); q = 0 hard cap | PASS | 2026-10-04; `math_check.py` toe/shoulder samples also pass |
 | C21 | `test_color.cpp` in the grade: toe/shoulder as a common RGB gain (ratios kept), Y <= 0 and black untouched, middle region bit-identical, clips still act at Grade Mix 0, enabled clips are not "neutral"; offset added exactly to every channel incl. black, negative kept, mixed by Grade Mix; offset + toe; L > H conflict detected | PASS | |
@@ -113,27 +113,26 @@ waveform in RGB parade for H5. Settle sliders by typing values.
 
 ### P3 - HDR Color tonal zones
 
-Setup as P2. Figures for gray reference 18 nits, 1000-nit peak, schema-3 default
-zone ranges (Dark open to black, Highlight open to peak, 3-stop falloffs, Specular
-full from +5). Only Specular changed in schema 3; the Z3-Z6b figures do not involve it.
+Setup as P2. Figures for gray reference 18 nits, 1000-nit peak, schema-4 defaults
+(seven zones, handovers at -4 / -1 / +1 / +3 stops, Specular full from +5).
 
 | ID | Test | Expected | Status |
 |---|---|---|---|
 | Z1 | Defaults with Force shader render ON vs filter off (*HLG levels only*) | identical (zone stage inactive when every zone is neutral) | NOT RUN |
-| Z2 | Diagnostic *All zones* on the Chart | 0.01 / 0.1 nits Black + Dark; 1 nit Dark + some Shadow; 18 Shadow + Light; 100 Light + Highlight; 203-300 Highlight with a little Specular; 750 and up Highlight + Specular; ramp shows wide overlapping bands | NOT RUN |
-| Z3 | Diagnostic *Zone mask*, Shadow, *HLG levels only* (W = 203) | 10% bar 69.2% (w 0.71); 20% 75% (w 1); 30% 72.4% (w 0.85); 40% 58.7% (w 0.39); 50% 30.4% (w 0.08); 60%+ at 0 | NOT RUN |
-| Z4 | Shadow +1 EV | 10% -> 12.3% (171); 20% -> 26.7% (298); 30% -> 38.4% (400); 40% -> 44.8% (456); 50% -> 51.1% (512); 60% and up unchanged | NOT RUN |
-| Z5 | Highlight -1 EV | 30% and below unchanged; 40% -> 38.4% (400); 50% -> 43.3% (443); 60% -> 48.6% (490); 70% -> 57.8% (570); 75% -> 63.2% (618); 90% -> 79.1% (757); 100% -> 89.3% (847); 105/109% bars move down too (open to peak) | NOT RUN |
-| Z6 | Dark +1 EV | 0% stays 0 (gain, not lift); 10% -> 13.3% (181); 20% -> 20.8% (246); 30% and up unchanged | NOT RUN |
-| Z6b | Light +1 EV | 20% -> 20.2%; 30% -> 35.8% (378); 40% -> 52.9% (527); 50% -> 63.2% (618); 60% -> 71.8% (693); 75% -> 80.6% (770); 90% -> 90.1% | NOT RUN |
-| Z7 | Untick a zone with a non-zero setting | effect disappears, values kept; tick again restores | NOT RUN |
-| Z8 | Dark: untick *Extend down to black* | fields switch from "Full strength up to / Falloff above" to centre / width / both falloffs; mask (Z3 view on Dark) gets a lower fade at -9..-6 stops; tick again restores the open end | NOT RUN |
-| Z9 | Move Shadow centre / width / falloffs; then *Reset this zone* | mask moves accordingly; reset restores defaults and only that zone | NOT RUN |
-| Z10 | Save, restart OBS | all zone values, enables and open flags restored; scope identical | NOT RUN |
-| Z11 | Migration: a scene collection saved with build 4f7f8f13f that has a zone adjustment, opened with this build | looks identical to before (log: `settings from schema 1 - kept their zone ranges`); its Dark/Highlight are not open-ended | NOT RUN |
-| Z12 | Global exposure +1 EV with diagnostic *All zones* | colour bands shift one stop down the picture (masks follow global exposure by design) | NOT RUN |
-| Z13 | Migration: a scene saved with build 525333391 (schema 2) that uses Specular, opened with this build | looks identical (log: `settings from schema 2 - kept their Specular range`); a new HDR Color instance has Specular full from +5 (mask view, Specular, HLG levels: 75% bar w 0.15, 80% w 0.46, 90% w 0.99, 100% w 1) | NOT RUN |
-
+| Z2 | Diagnostic *All zones*, *HLG levels only* | 0% Black + Dark; 5% mostly Black + Dark; 10% Dark/Shadow half each; 20% Shadow; 30% Midtones (grey); 40% Midtones + some Light; 50-60% Light (yellow); 70% Light/Highlight; 75% Highlight + a little Specular; 90% and up Highlight + Specular | NOT RUN |
+| Z3 | Diagnostic *Zone mask*, Midtones (W = 203) | 30% bar reads 75% (w 1); 40% bar 70.6% (w 0.77); 50% bar 30.7% (w 0.08); 20% bar 11% (w 0.01); 10% at 0 | NOT RUN |
+| Z4 | Midtones +1 EV | 30% -> 40.0% (415); 40% -> 49.9% (501); 50% -> 51.1% (512); all other bars unchanged | NOT RUN |
+| Z5 | Shadow +1 EV | 10% -> 11.4% (164); 20% -> 26.6% (297); others unchanged | NOT RUN |
+| Z6 | Light +1 EV | 40% -> 42.8%; 50% -> 62.3% (609); 60% -> 72.0% (695); 70% -> 75.0% (721); 75% -> 75.9% (729). +1 EV is exactly the tonal-order limit of a 1.5-stop fade, so 70-75% nearly flatten | NOT RUN |
+| Z7 | Highlight -1 EV | 70% -> 63.3% (618); 75% -> 64.2% (626); 80% -> 68.6%; 90% -> 79.1% (757); 100% -> 89.3% (847); 109% -> 98.5% (927) | NOT RUN |
+| Z8 | Dark +1 EV | 0% stays 0 (gain, not lift); 5% -> 6.7%; 10% -> 11.8% (167) | NOT RUN |
+| Z9 | Specular -1 EV | 75% -> 73.2%; 80% -> 74.9%; 90% -> 79.2%; 100% -> 89.3%; 109% -> 98.5% | NOT RUN |
+| Z10 | Dark, Shadow, Midtones, Light, Highlight all +0.5 EV | identical to global exposure +0.5 EV (chain weights sum to 1) | NOT RUN |
+| Z11 | Untick a zone with a non-zero setting | effect disappears, values kept; tick again restores | NOT RUN |
+| Z12 | Dark: untick *Extend down to black* | fields switch to centre / width / both falloffs; mask gains a lower fade at -9..-7 stops; tick again restores the open end | NOT RUN |
+| Z13 | Move Midtones centre / width / falloffs; then *Reset this zone* | mask moves accordingly; reset restores defaults and only that zone | NOT RUN |
+| Z14 | Save, restart OBS | all zone values, enables and open flags restored; scope identical | NOT RUN |
+| Z15 | Global exposure +1 EV with diagnostic *All zones* | colour bands shift one stop down the picture (masks follow global exposure by design) | NOT RUN |
 
 ### Offset and soft clip
 

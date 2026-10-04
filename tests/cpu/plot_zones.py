@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 
 d = np.loadtxt(sys.argv[1])
 gray = float(sys.argv[3]) if len(sys.argv) > 3 else 18.0
-names = ["Black", "Dark", "Shadow", "Light", "Highlight", "Specular"]
-colors = ["#3b4cc0", "#2a9df4", "#1a9850", "#d9b500", "#f46d43", "#c51b7d"]
+names = ["Black", "Dark", "Shadow", "Midtones", "Light", "Highlight", "Specular"]
+colors = ["#3b4cc0", "#2a9df4", "#1a9850", "#7f7f7f", "#d9b500", "#f46d43", "#c51b7d"]
 
 
 def hlg_pct(nits):
@@ -65,6 +65,6 @@ ax.set_ylabel("zone weight")
 ax.set_ylim(-0.02, 1.08)
 ax.set_xlim(d[0, 0], ceiling_stop)
 ax.grid(alpha=0.25)
-ax.legend(ncol=6, loc="upper center", fontsize=8, frameon=False, bbox_to_anchor=(0.5, 1.12))
+ax.legend(ncol=7, loc="upper center", fontsize=8, frameon=False, bbox_to_anchor=(0.5, 1.12))
 fig.tight_layout()
 fig.savefig(sys.argv[2])
