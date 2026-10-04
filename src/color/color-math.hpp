@@ -28,7 +28,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  *   unpremultiply -> nits -> C0 -> white balance -> global exposure
  *   -> zone masks (computed here and frozen) -> combined zone exposure
  *   -> contrast around pivot -> global + zone wheel -> global x zone saturation
- *   -> grade mix -> [low / high soft clip, gamut containment: P3b/P5]
+ *   -> offset (user-directed addition, 4 Oct 2026) -> grade mix
+ *   -> low soft clip -> high soft clip (brief 8) -> [gamut containment: P5]
  *   -> working units -> premultiply
  */
 
@@ -148,7 +149,26 @@ struct GlobalParams {
 	double wheel_y = 0.0;
 	double grade_mix = 1.0; // 0 .. 1
 	std::array<ZoneParams, kZoneCount> zones = default_zones();
+	// Straight linear offset, nits, added equally to R, G, B (part of the grade:
+	// before Grade Mix). Not black-preserving by design.
+	double offset_nits = 0.0; // +-10
+	// Soft clips (brief 8): after Grade Mix, on straight linear luminance.
+	bool low_clip = false;
+	double low_knee_nits = 0.1; // L > 0
+	double low_strength = 0.5;  // beta 0..1
+	bool high_clip = false;
+	double high_peak_nits = 1000.0; // P > 0 (asymptote)
+	double high_softness = 0.25;    // q 0..0.95; 0 = hard cap at P
+	double high_knee_nits() const { return high_peak_nits * (1.0 - high_softness); }
 };
+
+// Both clips enabled with the low knee above the high knee (brief 8.3: no
+// unmodified middle region). The caller keeps the last valid curves.
+bool clips_conflict(const GlobalParams &p);
+
+// Brief 8.2 / 8.3 curves on luminance (double reference).
+double toe_curve(double y, double knee, double strength);
+double shoulder_curve(double y, double peak, double softness);
 
 // Clamp to documented ranges, replace non-finite values with defaults, and
 // make zone edges ordered with the minimum falloff (deterministic push upward:
@@ -172,8 +192,12 @@ struct ShaderParams {
 	float zone_ev[kZoneCount];
 	float zone_sat[kZoneCount];
 	float zone_wheel[kZoneCount][3];
+	float offset_nits;
+	float low_knee, low_strength;              // L, beta
+	float high_knee, high_headroom, high_peak; // H = P - D, D = P q, P
 	// Stage enables (uniform branches give exact identity for neutral stages).
 	float use_wb, use_contrast, use_zones, use_wheel, use_saturation, use_mix;
+	float use_offset, use_low_clip, use_high_clip;
 };
 
 bool make_shader_params(const GlobalParams &p, ShaderParams &out, std::string *error = nullptr);

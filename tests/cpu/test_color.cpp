@@ -507,6 +507,146 @@ int main(int argc, char **argv)
 		std::printf("zone tonal-order limit |EV| <= falloff/1.5 confirmed for all six default zones\n");
 	}
 
+	// 10. Offset and soft clips (brief 8).
+	{
+		// Brief 8.2 table: L = 0.1, beta = 1.
+		const double tin[] = {0, 0.025, 0.05, 0.075, 0.1};
+		const double tout[] = {0, 0.0109375, 0.0375, 0.0703125, 0.1};
+		for (int i = 0; i < 5; i++)
+			CHECK(std::fabs(toe_curve(tin[i], 0.1, 1.0) - tout[i]) < 1e-15, "toe table at %g", tin[i]);
+		// Brief 8.3 table: P = 1000, q = 0.25.
+		const double sin_[] = {0, 750, 1000, 2000, 10000};
+		const double sout[] = {0, 750, 875, 958.333333333333, 993.421052631579};
+		for (int i = 0; i < 5; i++)
+			CHECK(std::fabs(shoulder_curve(sin_[i], 1000, 0.25) - sout[i]) < 1e-9, "shoulder table at %g",
+			      sin_[i]);
+		// Toe: F(0)=0, F(L)=L, C1 at L, monotonic, never lifts, beta 0 exact identity.
+		for (double beta : {0.0, 0.25, 0.5, 1.0})
+			for (double knee : {0.001, 0.1, 5.0}) {
+				const double h = knee * 1e-6;
+				const double slope =
+					(toe_curve(knee + h, knee, beta) - toe_curve(knee - h, knee, beta)) / (2 * h);
+				CHECK(std::fabs(slope - 1) < 1e-5, "toe slope at knee %g beta %g: %g", knee, beta,
+				      slope);
+				CHECK(toe_curve(0, knee, beta) == 0 && toe_curve(knee, knee, beta) == knee, "toe ends");
+				double prev = -1;
+				for (int k = 0; k <= 1000; k++) {
+					const double y = knee * 1.2 * k / 1000;
+					const double f = toe_curve(y, knee, beta);
+					CHECK(f >= prev && f <= y + 1e-18, "toe monotonic / no lift at %g", y);
+					if (beta == 0)
+						CHECK(f == y, "toe beta 0 not identity");
+					prev = f;
+				}
+			}
+		// Shoulder: C1 at the knee, monotonic, finite inputs stay below P, q = 0 hard cap.
+		for (double q : {0.01, 0.25, 0.75, 0.95}) {
+			const double P = 1000, H = P * (1 - q), h = 1e-4;
+			const double slope = (shoulder_curve(H + h, P, q) - shoulder_curve(H - h, P, q)) / (2 * h);
+			// central difference across a C1 (not C2) join: expected bias h / (2 D)
+			CHECK(std::fabs(slope - 1) < 1e-6 + h / (P * q), "shoulder slope at knee q %g: %g", q, slope);
+			double prev = -1;
+			for (int k = 0; k <= 4000; k++) {
+				const double y = std::pow(10.0, -2 + 9.0 * k / 4000);
+				const double f = shoulder_curve(y, P, q);
+				CHECK(f > prev && f < P, "shoulder at %g (q %g): %g", y, q, f);
+				prev = f;
+			}
+		}
+		CHECK(shoulder_curve(1500, 1000, 0) == 1000 && shoulder_curve(600, 1000, 0) == 600, "hard cap");
+
+		// In the pipeline: common RGB scale (ratios kept), Y <= 0 untouched, black stays black.
+		GlobalParams p;
+		p.low_clip = true;
+		p.low_strength = 1;
+		p.high_clip = true;
+		CHECK(!is_neutral(p), "enabled clips counted as neutral");
+		const Vec3 lo = {0.06, 0.04, 0.02};
+		const Vec3 rl = reference_grade(p, lo);
+		const double yl = dot(kLuma, lo);
+		CHECK(rel(dot(kLuma, rl), toe_curve(yl, 0.1, 1)) < 1e-12 && rel(rl[0] / rl[2], 3.0) < 1e-12,
+		      "toe in grade");
+		const Vec3 hi = {3000, 2000, 1000};
+		const Vec3 rh = reference_grade(p, hi);
+		CHECK(rel(dot(kLuma, rh), shoulder_curve(dot(kLuma, hi), 1000, 0.25)) < 1e-12 &&
+			      rel(rh[0] / rh[2], 3.0) < 1e-12,
+		      "shoulder in grade");
+		const Vec3 neg = {-0.05, 0.01, 0.0}; // Y < 0
+		CHECK(reference_grade(p, neg) == neg, "clip touched Y <= 0");
+		const Vec3 blk = reference_grade(p, Vec3{0, 0, 0});
+		CHECK(blk[0] == 0 && blk[1] == 0 && blk[2] == 0, "clips moved black");
+		const Vec3 mid = {40, 30, 20};
+		CHECK(reference_grade(p, mid) == mid, "clips changed the middle region");
+
+		// Mix order: at Grade Mix 0 the grade is gone but the high clip still works (brief 5.4).
+		GlobalParams m;
+		m.exposure_ev = 2;
+		m.grade_mix = 0;
+		m.high_clip = true;
+		const Vec3 w = {2000, 2000, 2000};
+		CHECK(rel(reference_grade(m, w)[0], shoulder_curve(2000, 1000, 0.25)) < 1e-12, "clip not after mix");
+
+		// Offset: added exactly to every channel, black included; part of the grade (mixed).
+		GlobalParams o;
+		o.offset_nits = 0.05;
+		const Vec3 ro = reference_grade(o, Vec3{0, 1, 100});
+		CHECK(ro[0] == 0.05 && ro[1] == 1.05 && ro[2] == 100.05, "offset not exact");
+		o.offset_nits = -0.02;
+		CHECK(reference_grade(o, Vec3{0, 0, 0})[0] == -0.02, "negative offset clamped");
+		o.offset_nits = 0.1;
+		o.grade_mix = 0.5;
+		CHECK(std::fabs(reference_grade(o, Vec3{0, 0, 0})[0] - 0.05) < 1e-15, "offset not mixed");
+		CHECK(!is_neutral(o), "offset counted as neutral");
+		// Offset then toe: a lifted black below the knee is compressed, not removed.
+		GlobalParams ot;
+		ot.offset_nits = 0.05;
+		ot.low_clip = true;
+		const double lifted = reference_grade(ot, Vec3{0, 0, 0})[0];
+		CHECK(lifted > 0 && rel(lifted, toe_curve(0.05, 0.1, 0.5)) < 1e-12, "offset + toe");
+
+		// Conflict: both on with L > H.
+		GlobalParams c;
+		c.low_clip = c.high_clip = true;
+		c.low_knee_nits = 800;
+		CHECK(clips_conflict(c), "conflict not detected");
+		c.low_knee_nits = 700;
+		CHECK(!clips_conflict(c), "false conflict");
+	}
+	{
+		// Float mirror with offset and clips.
+		std::mt19937_64 r3(31);
+		std::uniform_real_distribution<double> V(0, 1);
+		double worst = 0;
+		for (int i = 0; i < 20000; i++) {
+			GlobalParams p;
+			p.exposure_ev = V(r3) * 6 - 2;
+			p.saturation = V(r3) * 2;
+			p.offset_nits = V(r3) < 0.5 ? 0 : V(r3) * 2 - 1;
+			p.grade_mix = V(r3) < 0.5 ? 1 : V(r3);
+			p.low_clip = V(r3) < 0.5;
+			p.low_knee_nits = std::pow(10.0, V(r3) * 3 - 3);
+			p.low_strength = V(r3);
+			p.high_clip = V(r3) < 0.5;
+			p.high_peak_nits = 100 + V(r3) * 4000;
+			p.high_softness = V(r3) < 0.1 ? 0 : V(r3) * 0.95;
+			p.zones[ZoneShadow].exposure_ev = V(r3) * 2 - 1;
+			sanitize(p);
+			ShaderParams sp;
+			CHECK(make_shader_params(p, sp), "shader params");
+			const double y = std::pow(10.0, V(r3) * 7 - 3);
+			const Vec3 c = {y * (0.2 + V(r3)), y * (0.2 + V(r3)), y * (0.2 + V(r3))};
+			const Vec3 r = reference_grade(p, c);
+			const auto f = shader_grade(sp, {(float)c[0], (float)c[1], (float)c[2]});
+			const double scale = std::fmax(std::fabs(r[0]), std::fmax(std::fabs(r[1]), std::fabs(r[2])));
+			for (int k = 0; k < 3; k++) {
+				CHECK(std::isfinite(f[k]), "mirror not finite");
+				worst = std::fmax(worst, std::fabs(f[k] - r[k]) / std::fmax(scale, 1e-3));
+			}
+		}
+		std::printf("float shader mirror vs double, offset + soft clips: max error %.3g\n", worst);
+		CHECK(worst < 5e-5, "float mirror error too large with clips");
+	}
+
 	std::printf(failures ? "RESULT: FAIL (%d)\n" : "RESULT: PASS\n", failures);
 	return failures ? 1 : 0;
 }

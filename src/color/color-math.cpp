@@ -335,6 +335,11 @@ std::string sanitize(GlobalParams &p)
 	clampv(p.wheel_x, -1, 1, 0, "wheel x", log);
 	clampv(p.wheel_y, -1, 1, 0, "wheel y", log);
 	clampv(p.grade_mix, 0, 1, 1, "grade mix", log);
+	clampv(p.offset_nits, -10, 10, 0, "offset", log);
+	clampv(p.low_knee_nits, 0.0001, 100, 0.1, "low clip knee", log);
+	clampv(p.low_strength, 0, 1, 0.5, "low clip strength", log);
+	clampv(p.high_peak_nits, 1, 10000, 1000, "high clip peak", log);
+	clampv(p.high_softness, 0, 0.95, 0.25, "high clip softness", log);
 	for (int i = 0; i < kZoneCount; i++) {
 		ZoneParams &z = p.zones[i];
 		const ZoneParams def = default_zone(i);
@@ -378,13 +383,41 @@ std::string sanitize(GlobalParams &p)
 bool is_neutral(const GlobalParams &p)
 {
 	if (!(p.exposure_ev == 0 && p.contrast == 1 && p.saturation == 1 && p.wb_mired == 0 && p.wb_tint == 0 &&
-	      p.wheel_x == 0 && p.wheel_y == 0))
+	      p.wheel_x == 0 && p.wheel_y == 0 && p.offset_nits == 0))
+		return false;
+	if (p.low_clip || p.high_clip) // an enabled clip renders even at Grade Mix 0 (brief 5.4)
 		return false;
 	for (const ZoneParams &z : p.zones)
 		if (z.active())
 			return false;
 	return true;
 	// grade_mix is irrelevant when the grade itself is neutral.
+}
+
+bool clips_conflict(const GlobalParams &p)
+{
+	return p.low_clip && p.high_clip && p.low_knee_nits > p.high_knee_nits();
+}
+
+double toe_curve(double y, double knee, double beta)
+{
+	if (!(y > 0) || y >= knee || beta == 0)
+		return y; // identity above the knee and at beta 0; Y <= 0 untouched (brief 8.4)
+	const double t = y / knee;
+	return knee * ((1.0 - beta) * t + beta * (2.0 * t * t - t * t * t));
+}
+
+double shoulder_curve(double y, double peak, double q)
+{
+	if (!(y > 0))
+		return y;
+	if (q == 0)
+		return std::min(y, peak); // enabled hard cap (brief 8.3), not the disabled state
+	const double d = peak * q, h = peak - d;
+	if (y <= h)
+		return y;
+	const double x = y - h;
+	return h + d * x / (d + x);
 }
 
 struct StageUse {
@@ -443,6 +476,15 @@ bool make_shader_params(const GlobalParams &p, ShaderParams &s, std::string *err
 	s.use_wheel = u.wheel ? 1.0f : 0.0f;
 	s.use_saturation = u.saturation ? 1.0f : 0.0f;
 	s.use_mix = p.grade_mix != 1.0 ? 1.0f : 0.0f;
+	s.offset_nits = (float)p.offset_nits;
+	s.use_offset = p.offset_nits != 0 ? 1.0f : 0.0f;
+	s.low_knee = (float)p.low_knee_nits;
+	s.low_strength = (float)p.low_strength;
+	s.use_low_clip = p.low_clip ? 1.0f : 0.0f;
+	s.high_peak = (float)p.high_peak_nits;
+	s.high_headroom = (float)(p.high_peak_nits * p.high_softness);
+	s.high_knee = (float)(p.high_peak_nits - p.high_peak_nits * p.high_softness);
+	s.use_high_clip = p.high_clip ? 1.0f : 0.0f;
 	return true;
 }
 
@@ -524,9 +566,31 @@ Vec3 reference_grade(const GlobalParams &p, const Vec3 &in)
 		for (double &x : c)
 			x = y + st * (x - y);
 	}
+	if (p.offset_nits != 0)
+		for (double &x : c)
+			x += p.offset_nits;
 	if (p.grade_mix != 1.0)
 		for (int i = 0; i < 3; i++)
 			c[i] = (1.0 - p.grade_mix) * c0[i] + p.grade_mix * c[i];
+	// Soft clips after Grade Mix: common scalar gain F(Y)/Y for positive Y only.
+	if (p.low_clip) {
+		const double y = dot(kLuma, c);
+		if (y > 0 && y < p.low_knee_nits) {
+			// F(Y)/Y in the brief's division-free form (exact identity at beta 0)
+			const double t = y / p.low_knee_nits;
+			const double g = (1.0 - p.low_strength) + p.low_strength * t * (2.0 - t);
+			for (double &x : c)
+				x *= g;
+		}
+	}
+	if (p.high_clip) {
+		const double y = dot(kLuma, c);
+		if (y > 0) {
+			const double g = shoulder_curve(y, p.high_peak_nits, p.high_softness) / y;
+			for (double &x : c)
+				x *= g;
+		}
+	}
 	return c;
 }
 
@@ -598,9 +662,37 @@ std::array<float, 3> shader_grade(const ShaderParams &s, const std::array<float,
 		for (float &x : c)
 			x = y + st * (x - y);
 	}
+	if (s.use_offset > 0.5f)
+		for (float &x : c)
+			x = x + s.offset_nits;
 	if (s.use_mix > 0.5f)
 		for (int i = 0; i < 3; i++)
 			c[i] = (1.0f - s.grade_mix) * c0[i] + s.grade_mix * c[i];
+	if (s.use_low_clip > 0.5f) {
+		const float y = luma(c);
+		if (y > 0.0f && y < s.low_knee) {
+			// brief 8.2: scale without dividing by a small Y
+			const float t = y / s.low_knee;
+			const float g = (1.0f - s.low_strength) + s.low_strength * t * (2.0f - t);
+			for (float &x : c)
+				x *= g;
+		}
+	}
+	if (s.use_high_clip > 0.5f) {
+		const float y = luma(c);
+		if (y > s.high_knee) {
+			float f;
+			if (s.high_headroom > 0.0f) {
+				const float x = y - s.high_knee;
+				f = s.high_knee + s.high_headroom * x / (s.high_headroom + x);
+			} else {
+				f = s.high_peak; // q = 0: hard cap (knee = peak)
+			}
+			const float g = f / y;
+			for (float &x : c)
+				x *= g;
+		}
+	}
 	return c;
 }
 

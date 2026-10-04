@@ -51,12 +51,23 @@ uniform float3 zone_wd5 = {0.0, 0.0, 0.0};
 uniform float diag_mode = 0.0;
 uniform float diag_zone = 2.0;
 
+// Offset (nits, every channel) and soft clips (brief 8; H = knee, D = headroom, P = peak)
+uniform float offset_nits = 0.0;
+uniform float low_knee = 0.1;
+uniform float low_strength = 0.5;
+uniform float high_knee = 750.0;
+uniform float high_headroom = 250.0;
+uniform float high_peak = 1000.0;
+
 uniform float use_wb = 0.0;
 uniform float use_contrast = 0.0;
 uniform float use_zones = 0.0;
 uniform float use_wheel = 0.0;
 uniform float use_saturation = 0.0;
 uniform float use_mix = 0.0;
+uniform float use_offset = 0.0;
+uniform float use_low_clip = 0.0;
+uniform float use_high_clip = 0.0;
 
 // Linear: this pass is also the scaled draw into the scene (see hdr-neutral.effect).
 sampler_state linear_sampler {
@@ -175,9 +186,35 @@ float3 grade_nits(float3 c_in)
 		c = float3(ys, ys, ys) + st * (c - float3(ys, ys, ys));
 	}
 
+	// straight linear offset on every channel (part of the grade)
+	if (use_offset > 0.5)
+		c = c + float3(offset_nits, offset_nits, offset_nits);
+
 	// grade mix with the original (before soft clipping, brief 5.4)
 	if (use_mix > 0.5)
 		c = (1.0 - grade_mix) * c0 + grade_mix * c;
+
+	// low soft clip: black-preserving toe, positive Y below the knee only (brief 8.2)
+	if (use_low_clip > 0.5) {
+		float yl = luma(c);
+		if (yl > 0.0 && yl < low_knee) {
+			float t = yl / low_knee;
+			c = c * ((1.0 - low_strength) + low_strength * t * (2.0 - t));
+		}
+	}
+
+	// high soft clip: bounded shoulder towards the peak (brief 8.3); q = 0 is a hard cap
+	if (use_high_clip > 0.5) {
+		float yh = luma(c);
+		if (yh > high_knee) {
+			float fy = high_peak;
+			if (high_headroom > 0.0) {
+				float xh = yh - high_knee;
+				fy = high_knee + high_headroom * xh / (high_headroom + xh);
+			}
+			c = c * (fy / yh);
+		}
+	}
 
 	return c;
 }

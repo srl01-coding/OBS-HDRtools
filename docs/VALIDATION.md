@@ -33,11 +33,14 @@ evidence for every result; never infer a result from a different layer.
 | C12 | `test_color.cpp`: exposure exact (+1 EV doubles, -1 halves); contrast fixes the pivot, follows `pivot*(Y/pivot)^k` over 1e-4..1e4 nits, monotonic, black stays black, negative Y finite | PASS | |
 | C13 | `test_color.cpp`: wheel hue directions luminance-orthogonal (0/120/240 deg = R/G/B); radius clamped at 1; wheel + saturation preserve linear Y; saturation 0 gives Y-neutral grey; black preserved by the full grade; Grade Mix 0 = original and linear | PASS | linear-Y error 6.1e-16 (5,000 random grades) |
 | C14 | `test_color.cpp`: float32 mirror of `hdr-color.effect` vs double reference, 20,000 random grades x colours 0.01-10,000 nits | PASS | max error 3.6e-6 of the pixel's largest channel; neutral params bit-exact |
-| C15 | `test_color.cpp`: zone windows continuous (max change 0.00075 per 0.001 stop over -30..30), weights in [0,1], full strength and zeros where the schema-2 table puts them; Black and Dark cover Y = 0, negative, 1e-30 and 0.01 nits; Highlight and Specular cover up to 1.2e7 nits; every adjacent pair overlaps >= 2 stops; brief stop markers | PASS | 2026-10-04 (schema 2 defaults). Plot: `plot_zones.py` |
+| C15 | `test_color.cpp`: zone windows continuous (max change 0.0005 per 0.001 stop over -30..30), weights in [0,1], full strength and zeros where the schema-2 table puts them; Black and Dark cover Y = 0, negative, 1e-30 and 0.01 nits; Highlight and Specular cover up to 1.2e7 nits; every adjacent pair overlaps >= 2 stops; brief stop markers | PASS | 2026-10-04 (schema 2 defaults). Plot: `plot_zones.py` |
 | C16 | `test_color.cpp`: isolated zone gain = 2^(w EV) at the input mask (pure RGB scale, all six zones); frozen mask (Shadow +3 does not pick up Light -3 after the lift); overlap sums EV; neutral or disabled zones (incl. a widened neutral Light) leave another zone's response bit-identical | PASS | gain law error 0 |
 | C17 | `test_color.cpp`: zone saturation 0 desaturates fully at full weight and leaves out-of-window pixels bit-identical; zone wheel preserves Y and black; disabled zone keeps its value and is neutral; default zones enable no stage | PASS | |
-| C18 | `test_color.cpp`: float mirror of the zone shader vs double, 20,000 random global + six-zone grades with random open ends; edge sanitising (reorder, NaN reset, fixed open ends cannot close, an open side's unused edges never override a used edge, re-closing gives a valid window) | PASS | max error 5.5e-6 of the pixel's largest channel; all finite |
+| C18 | `test_color.cpp`: float mirror of the zone shader vs double, 20,000 random global + six-zone grades with random open ends; edge sanitising (reorder, NaN reset, fixed open ends cannot close, an open side's unused edges never override a used edge, re-closing gives a valid window) | PASS | max error 8.9e-6 of the pixel's largest channel; all finite |
 | C19 | `test_color.cpp`: tonal order kept for a push of 0.98 x falloff/1.5 and reversed at 1.1 x, every default zone, both directions | PASS | |
+| C20 | `test_color.cpp`: toe and shoulder reproduce the brief 8.2 / 8.3 tables; toe F(0)=0, F(L)=L, slope 1 at L, monotonic, never lifts, beta 0 exact identity (several L, beta); shoulder slope 1 at H, monotonic, stays below P over 0.01..1e7 nits (q 0.01..0.95); q = 0 hard cap | PASS | 2026-10-04; `math_check.py` toe/shoulder samples also pass |
+| C21 | `test_color.cpp` in the grade: toe/shoulder as a common RGB gain (ratios kept), Y <= 0 and black untouched, middle region bit-identical, clips still act at Grade Mix 0, enabled clips are not "neutral"; offset added exactly to every channel incl. black, negative kept, mixed by Grade Mix; offset + toe; L > H conflict detected | PASS | |
+| C22 | `test_color.cpp`: float mirror vs double with random offset, clips (incl. q = 0), mix and a zone | PASS | max error 2.0e-6 |
 
 ## Layer 1b - build
 
@@ -128,6 +131,21 @@ zone ranges (Dark open to black, Highlight open to peak, 3-stop falloffs).
 | Z10 | Save, restart OBS | all zone values, enables and open flags restored; scope identical | NOT RUN |
 | Z11 | Migration: a scene collection saved with build 4f7f8f13f that has a zone adjustment, opened with this build | looks identical to before (log: `settings from schema 1 - kept their zone ranges`); its Dark/Highlight are not open-ended | NOT RUN |
 | Z12 | Global exposure +1 EV with diagnostic *All zones* | colour bands shift one stop down the picture (masks follow global exposure by design) | NOT RUN |
+
+
+### Offset and soft clip
+
+| ID | Test | Expected | Status |
+|---|---|---|---|
+| S1 | Offset +0.05 nits, *HLG levels only* | 0% -> 2.8% (code 88); 5% -> 5.5% (112); 10% -> 10.2% (153); 20% and up within 0.1% | NOT RUN |
+| S2 | Offset -0.05 nits | 0% and 2% bars at 0% (below black internally, clipped at encode); 3% -> 1.4%; 5% -> 4.4%; 10% -> 9.8% | NOT RUN |
+| S3 | High soft clip on (peak 1000, knee 750) with exposure +1 EV | 75% -> 86.1% (818, below the knee: unchanged by the clip); 90% -> 98.1% (924); 100% -> 99.4% (934); 105% -> 99.6%; 109% -> 99.7% (937). Nothing reaches 100%: peak 1000 nits = HLG 100% is an asymptote | NOT RUN |
+| S4 | High clip, peak 1000, knee 500, 0 EV | 80% unchanged; 100% -> 95.6% (901); 105% -> 97.0%; 109% -> 97.7% (920) | NOT RUN |
+| S5 | High clip with knee typed equal to peak (1000) | hard cap: 100% and above all at 100% (940) | NOT RUN |
+| S6 | Low soft clip on, knee 1 nit, strength 1 | 2% -> 0.55%; 5% -> 3.3%; 8% -> 7.5%; 10% and up unchanged; 0% stays 0% | NOT RUN |
+| S7 | Grade Mix 0 with the high clip on (peak 1000, knee 750) and exposure +1 EV | exposure gone (75% and 90% back at 75% / 90%) but the clip still acts: 100% -> 98.0% (922); 105% -> 98.9%; 109% -> 99.3% | NOT RUN |
+| S8 | Both clips on, low knee typed above the high knee | status line shows CONFLICT, picture keeps the previous curves, log warning; fixing the value clears it | NOT RUN |
+| S9 | Save, restart | offset and clip settings restored | NOT RUN |
 
 ## Layer 3 - production path
 

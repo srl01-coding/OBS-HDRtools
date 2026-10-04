@@ -42,6 +42,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <plugin-support.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -116,10 +117,16 @@ struct ColorFilter {
 		    *p_use_mix = nullptr, *p_use_zones = nullptr;
 	gs_eparam_t *p_zone_edges[kZoneCount] = {}, *p_zone_es[kZoneCount] = {}, *p_zone_wd[kZoneCount] = {};
 	gs_eparam_t *p_diag_mode = nullptr, *p_diag_zone = nullptr;
+	gs_eparam_t *p_offset = nullptr, *p_low_knee = nullptr, *p_low_strength = nullptr, *p_high_knee = nullptr,
+		    *p_high_headroom = nullptr, *p_high_peak = nullptr;
+	gs_eparam_t *p_use_offset = nullptr, *p_use_low = nullptr, *p_use_high = nullptr;
 
-	std::mutex mutex; // guards snapshot / have_valid
+	std::mutex mutex; // guards snapshot / have_valid / last_clips
 	Snapshot snapshot;
 	bool have_valid = false;
+	// Last non-conflicting soft-clip settings (brief 8.3: keep the last valid curve).
+	GlobalParams last_clips;
+	bool have_clips = false;
 
 	// graphics thread only
 	hdrtk::RenderContext last_ctx;
@@ -144,6 +151,13 @@ GlobalParams read_params(obs_data_t *s)
 	p.wheel_x = obs_data_get_double(s, "global_wheel_x");
 	p.wheel_y = obs_data_get_double(s, "global_wheel_y");
 	p.grade_mix = obs_data_get_double(s, "grade_mix");
+	p.offset_nits = obs_data_get_double(s, "offset_nits");
+	p.low_clip = obs_data_get_bool(s, "low_clip_enabled");
+	p.low_knee_nits = obs_data_get_double(s, "low_clip_knee_nits");
+	p.low_strength = obs_data_get_double(s, "low_clip_strength");
+	p.high_clip = obs_data_get_bool(s, "high_clip_enabled");
+	p.high_peak_nits = obs_data_get_double(s, "high_clip_peak_nits");
+	p.high_softness = obs_data_get_double(s, "high_clip_softness");
 	for (int i = 0; i < kZoneCount; i++) {
 		ZoneParams &z = p.zones[i];
 		z.enabled = obs_data_get_bool(s, zkey(i, "enabled").c_str());
@@ -231,9 +245,34 @@ void color_update(void *data, obs_data_t *settings)
 	if (!problems.empty())
 		obs_log(LOG_WARNING, "[color] '%s': %s(clamped)", obs_source_get_name(f->context), problems.c_str());
 
-	// Keep the UI mirror in step with the stored edges (scripts may set only the edges).
+	// Keep the UI mirrors in step with the stored values (scripts may set only those).
 	for (int i = 0; i < kZoneCount; i++)
 		write_zone_ui(settings, i, p.zones[i], false);
+	obs_data_set_double(settings, "high_clip_knee_nits", p.high_knee_nits());
+
+	{
+		std::lock_guard<std::mutex> lock(f->mutex);
+		if (hdrtk::color::clips_conflict(p)) {
+			obs_log(LOG_WARNING,
+				"[color] '%s': soft clip conflict (low knee %.4g nits above high knee %.4g nits); %s",
+				obs_source_get_name(f->context), p.low_knee_nits, p.high_knee_nits(),
+				f->have_clips ? "keeping the previous curves" : "low clip held off");
+			if (f->have_clips) {
+				const GlobalParams &l = f->last_clips;
+				p.low_clip = l.low_clip;
+				p.low_knee_nits = l.low_knee_nits;
+				p.low_strength = l.low_strength;
+				p.high_clip = l.high_clip;
+				p.high_peak_nits = l.high_peak_nits;
+				p.high_softness = l.high_softness;
+			} else {
+				p.low_clip = false;
+			}
+		} else {
+			f->last_clips = p;
+			f->have_clips = true;
+		}
+	}
 
 	Snapshot s;
 	std::string error;
@@ -306,6 +345,15 @@ void *color_create(obs_data_t *settings, obs_source_t *source)
 		}
 		f->p_diag_mode = param(e, "diag_mode");
 		f->p_diag_zone = param(e, "diag_zone");
+		f->p_offset = param(e, "offset_nits");
+		f->p_low_knee = param(e, "low_knee");
+		f->p_low_strength = param(e, "low_strength");
+		f->p_high_knee = param(e, "high_knee");
+		f->p_high_headroom = param(e, "high_headroom");
+		f->p_high_peak = param(e, "high_peak");
+		f->p_use_offset = param(e, "use_offset");
+		f->p_use_low = param(e, "use_low_clip");
+		f->p_use_high = param(e, "use_high_clip");
 		f->p_use_wheel = param(e, "use_wheel");
 		f->p_use_sat = param(e, "use_saturation");
 		f->p_use_mix = param(e, "use_mix");
@@ -351,6 +399,15 @@ void color_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "global_wheel_x", 0.0);
 	obs_data_set_default_double(s, "global_wheel_y", 0.0);
 	obs_data_set_default_double(s, "grade_mix", 1.0);
+	obs_data_set_default_double(s, "offset_nits", 0.0);
+	// Soft clips: stored defaults per brief 8.1, not applied until enabled.
+	obs_data_set_default_bool(s, "low_clip_enabled", false);
+	obs_data_set_default_double(s, "low_clip_knee_nits", 0.1);
+	obs_data_set_default_double(s, "low_clip_strength", 0.5);
+	obs_data_set_default_bool(s, "high_clip_enabled", false);
+	obs_data_set_default_double(s, "high_clip_peak_nits", 1000.0);
+	obs_data_set_default_double(s, "high_clip_softness", 0.25);
+	obs_data_set_default_double(s, "high_clip_knee_nits", 750.0);
 	obs_data_set_default_bool(s, "force_render_identity", false);
 	obs_data_set_default_int(s, "diag_view", DiagOff);
 	obs_data_set_default_int(s, "diag_zone", hdrtk::color::ZoneShadow);
@@ -493,9 +550,9 @@ bool reset_clicked(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *f = static_cast<ColorFilter *>(data);
 	obs_data_t *s = obs_source_get_settings(f->context);
-	const char *keys[] = {"global_exposure_ev", "contrast_factor", "pivot_nits",
-			      "global_saturation",  "wb_mired_shift",  "wb_tint",
-			      "global_wheel_x",     "global_wheel_y",  "grade_mix"};
+	const char *keys[] = {"global_exposure_ev", "contrast_factor", "pivot_nits",     "global_saturation",
+			      "wb_mired_shift",     "wb_tint",         "global_wheel_x", "global_wheel_y",
+			      "grade_mix",          "offset_nits"};
 	for (const char *k : keys)
 		obs_data_unset_user_value(s, k);
 	for (int i = 0; i < kZoneCount; i++)
@@ -512,6 +569,67 @@ obs_property_t *slider(obs_properties_t *props, const char *key, const char *tex
 	if (suffix)
 		obs_property_float_set_suffix(p, suffix);
 	return p;
+}
+
+std::string clip_status(obs_data_t *s)
+{
+	GlobalParams p;
+	p.low_clip = obs_data_get_bool(s, "low_clip_enabled");
+	p.low_knee_nits = obs_data_get_double(s, "low_clip_knee_nits");
+	p.high_clip = obs_data_get_bool(s, "high_clip_enabled");
+	p.high_peak_nits = obs_data_get_double(s, "high_clip_peak_nits");
+	p.high_softness = obs_data_get_double(s, "high_clip_softness");
+	if (hdrtk::color::clips_conflict(p))
+		return obs_module_text("Color.Clip.Conflict");
+	return obs_module_text("Color.Clip.Info");
+}
+
+// Peak or knee changed: softness = 1 - knee / peak (the stored value). Refresh the
+// view only when the conflict status changes (refreshing steals slider focus).
+bool clip_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *s)
+{
+	const char *name = obs_property_name(property);
+	if (!std::strcmp(name, "high_clip_peak_nits") || !std::strcmp(name, "high_clip_knee_nits")) {
+		const double peak = obs_data_get_double(s, "high_clip_peak_nits");
+		const double knee = obs_data_get_double(s, "high_clip_knee_nits");
+		if (peak > 0)
+			obs_data_set_double(s, "high_clip_softness", std::clamp(1.0 - knee / peak, 0.0, 0.95));
+	}
+	obs_property_t *st = obs_properties_get(props, "clip_status");
+	const std::string text = clip_status(s);
+	const char *old = st ? obs_property_description(st) : nullptr;
+	if (st && (!old || text != old)) {
+		obs_property_set_description(st, text.c_str());
+		return true;
+	}
+	return false;
+}
+
+void add_clip_group(obs_properties_t *props, ColorFilter *f)
+{
+	obs_data_t *settings = f ? obs_source_get_settings(f->context) : nullptr;
+	obs_properties_t *g = obs_properties_create();
+	obs_properties_add_text(g, "clip_status", settings ? clip_status(settings).c_str() : "", OBS_TEXT_INFO);
+
+	obs_properties_t *lo = obs_properties_create();
+	obs_property_t *p = slider(lo, "low_clip_knee_nits", "Color.Clip.LowKnee", 0.001, 10.0, 0.001, " nits");
+	obs_property_set_modified_callback(p, clip_modified);
+	slider(lo, "low_clip_strength", "Color.Clip.LowStrength", 0.0, 1.0, 0.01, nullptr);
+	p = obs_properties_add_group(g, "low_clip_enabled", obs_module_text("Color.Clip.Low"), OBS_GROUP_CHECKABLE, lo);
+	obs_property_set_modified_callback(p, clip_modified);
+
+	obs_properties_t *hi = obs_properties_create();
+	p = slider(hi, "high_clip_peak_nits", "Color.Clip.HighPeak", 100.0, 10000.0, 1.0, " nits");
+	obs_property_set_modified_callback(p, clip_modified);
+	p = slider(hi, "high_clip_knee_nits", "Color.Clip.HighKnee", 5.0, 10000.0, 1.0, " nits");
+	obs_property_set_modified_callback(p, clip_modified);
+	p = obs_properties_add_group(g, "high_clip_enabled", obs_module_text("Color.Clip.High"), OBS_GROUP_CHECKABLE,
+				     hi);
+	obs_property_set_modified_callback(p, clip_modified);
+
+	obs_properties_add_group(props, "soft_clip", obs_module_text("Color.Clip"), OBS_GROUP_NORMAL, g);
+	if (settings)
+		obs_data_release(settings);
 }
 
 std::string stop_legend(double gray)
@@ -606,8 +724,15 @@ obs_properties_t *color_properties(void *data)
 
 	add_zone_groups(props, f);
 
+	obs_properties_t *og = obs_properties_create();
+	obs_properties_add_text(og, "offset_info", obs_module_text("Color.Offset.Info"), OBS_TEXT_INFO);
+	slider(og, "offset_nits", "Color.Offset", -1.0, 1.0, 0.0001, " nits");
+	obs_properties_add_group(props, "offset_group", obs_module_text("Color.Offset.Group"), OBS_GROUP_NORMAL, og);
+
 	slider(props, "grade_mix", "Color.GradeMix", 0.0, 1.0, 0.001, nullptr);
 	obs_properties_add_button2(props, "reset_grade", obs_module_text("Color.Reset"), reset_clicked, f);
+
+	add_clip_group(props, f);
 
 	obs_properties_t *adv = obs_properties_create();
 	slider(adv, "gray_reference_nits", "Color.GrayReference", 1.0, 100.0, 0.1, " nits");
@@ -695,6 +820,15 @@ void color_render(void *data, gs_effect_t *)
 		gs_effect_set_vec2(f->p_zone_es[i], &es);
 		set3(f->p_zone_wd[i], s.sp.zone_wheel[i]);
 	}
+	gs_effect_set_float(f->p_offset, s.sp.offset_nits);
+	gs_effect_set_float(f->p_low_knee, s.sp.low_knee);
+	gs_effect_set_float(f->p_low_strength, s.sp.low_strength);
+	gs_effect_set_float(f->p_high_knee, s.sp.high_knee);
+	gs_effect_set_float(f->p_high_headroom, s.sp.high_headroom);
+	gs_effect_set_float(f->p_high_peak, s.sp.high_peak);
+	gs_effect_set_float(f->p_use_offset, s.sp.use_offset);
+	gs_effect_set_float(f->p_use_low, s.sp.use_low_clip);
+	gs_effect_set_float(f->p_use_high, s.sp.use_high_clip);
 	gs_effect_set_float(f->p_diag_mode, (float)s.diag_view);
 	gs_effect_set_float(f->p_diag_zone, (float)s.diag_zone);
 	gs_effect_set_float(f->p_use_wheel, s.sp.use_wheel);

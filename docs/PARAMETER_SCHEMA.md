@@ -32,7 +32,7 @@ Not yet in the schema (later packages, additive with defaults matching v1
 behaviour): `transform_mode` (Corner Pin / Perspective 3D / Orthographic 3D),
 3D parameters, `edge_aa`, pixel / legacy-centred unit display.
 
-## hdr_toolkit_color_v1 (schema_version 2: P2 global stages + P3 tonal zones)
+## hdr_toolkit_color_v1 (schema_version 2: global stages, tonal zones, offset, soft clips)
 
 | Key | Type | Default | UI range | Meaning |
 |---|---|---|---|---|
@@ -47,6 +47,14 @@ behaviour): `transform_mode` (Corner Pin / Perspective 3D / Orthographic 3D),
 | `global_wheel_x`, `global_wheel_y` | double | 0, 0 | -1..1 | Colour-balance wheel; hue = atan2(y, x) with 0 deg = red, radius clamped to 1, sensitivity k = 0.5. `C += k r d(hue) Y`, d luminance-orthogonal |
 | `grade_mix` | double | 1 | 0..1 | Linear-light mix of the original and graded colour (brief 5.4); soft clips (P3) will run after it |
 | `force_render_identity` | bool | false | | Diagnostic: run the shader even when the grade is neutral |
+| `offset_nits` | double | 0 | -1..1 (script -10..10) | Straight linear offset in nits added to R, G, B (user-directed addition, 4 Oct 2026). After saturation, before Grade Mix; not black-preserving; negative results kept |
+| `low_clip_enabled` | bool | false | | Low soft clip (brief 8.2 toe) |
+| `low_clip_knee_nits` | double | 0.1 | 0.001..10 (script 0.0001..100) | Knee L |
+| `low_clip_strength` | double | 0.5 | 0..1 | beta; 0 = exact identity |
+| `high_clip_enabled` | bool | false | | High soft clip (brief 8.3 shoulder) |
+| `high_clip_peak_nits` | double | 1000 | 100..10000 (script 1..10000) | Asymptote P |
+| `high_clip_softness` | double | 0.25 | 0..0.95 | **Canonical** q; knee H = P (1 - q); q = 0 = hard cap at P |
+| `high_clip_knee_nits` | double | 750 | 5..10000 | UI mirror of H. Editing peak or knee sets q = clamp(1 - knee/peak, 0, 0.95) (the knee stays where it is in nits); regenerated from P, q on every update |
 | `diag_view` | int | 0 | | 0 off, 1 one zone's mask as grey (1.0 = SDR white), 2 all zones in false colour. Unknown values -> 0 |
 | `diag_zone` | int | 2 | 0..5 | Zone shown by `diag_view` 1 |
 
@@ -100,11 +108,18 @@ Tonal-order property (tested, C19): a single zone push keeps tonal order iff
 1.5 / falloff). Larger pushes are allowed (brief range +-4 EV) and can make
 tones in the falloff cross over; the UI says so.
 
-Processing order (brief 5.3; implemented stages marked *):
+Processing order (brief 5.3 plus the user-directed offset; implemented stages marked *):
 unpremultiply -> nominal nits -> C0 -> WB* -> exposure* -> zone masks (frozen)* ->
 zone exposure* -> contrast* -> global + zone wheel* -> global x zone saturation* ->
-Grade Mix* -> [low soft clip, high soft clip: P3b; gamut containment: P5] ->
+offset* -> Grade Mix* -> low soft clip* -> high soft clip* -> [gamut containment: P5] ->
 working units -> premultiply.
+
+Soft clips: one scalar gain F(Y)/Y on RGB, positive Y only (Y <= 0 untouched).
+Toe scale `(1-beta) + beta t (2-t)`, t = Y/L, for 0 < Y < L. Shoulder
+`H + D x/(D+x)`, x = Y - H, D = P q, for Y > H; q = 0 -> min(Y, P). Both enabled
+with L > H is a conflict: the last valid clip settings stay in use (low clip held
+off if there are none yet), the UI shows the conflict and the log warns.
+Clips run after Grade Mix, so they still work at Mix 0 (brief 5.4).
 
 The zone stage was added with neutral defaults, and the soft clips will
 default to off, so a scene saved by the P2 build renders identically. Any change to the order, WB mapping, wheel sensitivity or
