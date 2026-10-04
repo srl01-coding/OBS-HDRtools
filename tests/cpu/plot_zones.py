@@ -28,16 +28,17 @@ fig, ax = plt.subplots(figsize=(11, 4.6), dpi=130)
 for i, n in enumerate(names):
     ax.plot(d[:, 0], d[:, i + 1], color=colors[i], lw=2, label=n)
     ax.fill_between(d[:, 0], 0, d[:, i + 1], color=colors[i], alpha=0.08)
-ticks = np.arange(-12, 11, 2)
+# Right edge: the stop where OBS's HLG encode reaches 10-bit code 1023 (E' = 959/876).
+# Linear values above it exist inside the filter (and the zones act on them), but
+# they cannot appear in the encoded output, so the plot stops there.
+lo_n, hi_n = 1000.0, 3000.0
+for _ in range(100):
+    mid = 0.5 * (lo_n + hi_n)
+    lo_n, hi_n = (mid, hi_n) if 64 + 8.76 * hlg_pct(mid) < 1023 else (lo_n, mid)
+ceiling_nits = lo_n
+ceiling_stop = np.log2(ceiling_nits / gray)
+ticks = list(np.arange(-12, ceiling_stop - 0.4, 2)) + [ceiling_stop]
 ax.set_xticks(ticks)
-def hlg_label(nits):
-    # OBS's HLG encoder tops out at code 1023 (E' = 1.0947, about 1866 nits at a 1000-nit peak)
-    return ">109%" if nits > 1866 else f"{hlg_pct(nits):.0f}%"
-
-
-def code_label(nits):
-    # 10-bit narrow range: 64 + 876 E'
-    return "1023" if nits > 1866 else f"{64 + 8.76 * hlg_pct(nits):.0f}"
 
 
 def nits_label(nits):
@@ -52,14 +53,17 @@ def nits_label(nits):
     return f"{nits:.{digits}f}"
 
 
-ax.set_xticklabels(
-    [f"{t:+d}\n{nits_label(gray * 2.0 ** t)}\n{hlg_label(gray * 2.0 ** t)}\n{code_label(gray * 2.0 ** t)}" for t in ticks],
-    fontsize=8,
-)
+def tick_label(t):
+    n = gray * 2.0 ** t
+    stop = f"{t:+.1f}" if abs(t - round(t)) > 1e-9 else f"{int(round(t)):+d}"
+    return f"{stop}\n{nits_label(n)}\n{hlg_pct(n):.0f}%\n{min(1023, 64 + 8.76 * hlg_pct(n)):.0f}"
+
+
+ax.set_xticklabels([tick_label(t) for t in ticks], fontsize=8)
 ax.set_xlabel(f"stops from gray ({gray:g} nits)  /  nits  /  HLG % (1000-nit peak)  /  10-bit code (narrow range)", fontsize=9)
 ax.set_ylabel("zone weight")
 ax.set_ylim(-0.02, 1.08)
-ax.set_xlim(d[0, 0], d[-1, 0])
+ax.set_xlim(d[0, 0], ceiling_stop)
 ax.grid(alpha=0.25)
 ax.legend(ncol=6, loc="upper center", fontsize=8, frameon=False, bbox_to_anchor=(0.5, 1.12))
 fig.tight_layout()
