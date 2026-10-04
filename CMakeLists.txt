@@ -50,9 +50,13 @@ target_sources(
     src/color/color-math.cpp
     src/color/color-math.hpp
     src/color/color-filter.cpp
+    src/denoise/d3d11-compute.cpp
+    src/denoise/d3d11-compute.hpp
     src/denoise/hqdn3d-math.cpp
     src/denoise/hqdn3d-math.hpp
     src/denoise/program-denoise.cpp
+    src/denoise/spatial-math.cpp
+    src/denoise/spatial-math.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

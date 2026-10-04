@@ -10,8 +10,10 @@ HDR-safe video filters for OBS Studio, working in OBS's linear HDR space without
   and low / high soft clip.
 
 * **HDR Program Denoise** (Tools menu, in development) - processes the finished
-  program picture once per frame after transitions. P0 build: only an Identity
-  transparency test; HQDN3D and NLMeans follow.
+  program picture once per frame after transitions. HQDN3D-style spatial + temporal
+  denoise (an independent implementation) with scene-cut reset and transition
+  protection, in OBS's HDR working space; plus an Identity transparency test and a
+  D3D11 compute spike (Windows). NLMeans follows.
 
 Developer tools in the same package: **HDR Toolkit: Test Pattern (developer)**
 (exact HDR values: neutral patches 0-10,000 nits, log ramp, HLG 0-109% levels,

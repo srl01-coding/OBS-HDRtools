@@ -104,12 +104,35 @@ works but is not the designed case.
 Rough cost (estimate, not a measurement): about 7 full-frame RGBA16F reads/writes
 per frame, about 13 GB/s at 4K30 against the 1650 Super's ~190 GB/s, so a few ms.
 
+## P2: spatial B + D3D11 compute spike
+
+Decision: `P2_DECISION_RESPONSE.md` (Option D). Design: `docs/HQDN3D_DESIGN.md`
+section 8. Quality objective: `QUALITY_OBJECTIVE.md`.
+
+* **B (built):** a symmetric edge-aware kernel, separable as SpatialH then SpatialV in
+  pixel shaders. It runs before the temporal pass:
+
+  ```text
+  copy main -> cur
+  SpatialH(cur) -> sp_tmp ; SpatialV(sp_tmp) -> sp_out
+  metric and Temporal read sp_out
+  Output compares against cur
+  ```
+
+  The spatial passes are skipped while both spatial strengths are 0, unless
+  Development > *Run spatial passes at strength 0* is on (that is the identity proof).
+  VRAM is +2 program-size textures (127 MiB at 4K), released when spatial is off.
+* **A (CPU reference only):** a bidirectional separable recursion. The compute shader
+  for it waits until the compute spike passes on the user's machine.
+* **Compute spike (built):** `D3D11_COMPUTE.md`. It is a native compute identity round
+  trip with three isolation variants, a transparent fallback, and an *Exact change*
+  debug view.
+* **Radius:** 6, 8 or 12 (Development); 8 is provisional. On white noise all three are
+  equivalent at matched noise reduction (`HQDN3D_DESIGN.md` 8.6). Real camera noise is
+  spatially correlated, so footage decides.
+
 ## Later packages (from the brief, not started)
 
-* P2 HQDN3D spatial: a faithful recursive pass needs a D3D11 compute shader (OBS's
-  graphics API has no compute; `gs_get_device_obj()` / `gs_texture_get_obj()` give
-  the native objects) - Windows-only; the GPU-friendly approximation can stay in
-  pixel shaders. `docs/HQDN3D_DESIGN.md` must exist before any HQDN3D code (brief 28).
-* P3 NLMeans: rough budget, not a measurement: Light (3x3 patch, 7x7 search) at
-  3840x2160x30 is about 49 x 9 x 8.3 M x 30 = 110 G samples/s, around the 1650
-  Super's texture rate. Expect to need half-resolution or luma-only weights.
+* P3 NLMeans: decision sections 19-20. The patch-distance reuse formulation runs on the
+  compute infrastructure from the P2 spike. Light / Balanced / High tiers. High may
+  target RTX 3070-class hardware.

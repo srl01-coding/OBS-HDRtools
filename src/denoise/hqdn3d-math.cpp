@@ -69,6 +69,14 @@ double smoothstep(double e0, double e1, double x)
 	return t * t * (3.0 - 2.0 * t);
 }
 
+double chroma_distance(const double ca[3], const double cb[3], double ya, double yb, double k)
+{
+	double dd = 0;
+	for (int i = 0; i < 3; i++)
+		dd += (ca[i] - cb[i]) * (ca[i] - cb[i]);
+	return std::sqrt(dd) / (0.5 * (std::fabs(ya) + std::fabs(yb)) + k) / std::log(2.0);
+}
+
 double global_factor(const Params &p, double m, double f, bool reset, bool *cut)
 {
 	if (cut)
@@ -96,10 +104,7 @@ Rgba temporal_pixel(const Params &p, const Rgba &cur, const Rgba &hist, double g
 	const double ch[3] = {hist.r - yh, hist.g - yh, hist.b - yh};
 
 	const double dl = std::fabs(comp(yh, p.k_nits) - comp(yc, p.k_nits));
-	double dd = 0;
-	for (int i = 0; i < 3; i++)
-		dd += (ch[i] - cc[i]) * (ch[i] - cc[i]);
-	const double dc = std::sqrt(dd) / (0.5 * (std::fabs(yh) + std::fabs(yc)) + p.k_nits) / std::log(2.0);
+	const double dc = chroma_distance(ch, cc, yh, yc, p.k_nits);
 
 	const double wl = tl > 0 ? kBeta * response(dl / tl) * g : 0.0;
 	const double wc = tc > 0 ? kBeta * response(dc / tc) * g : 0.0;

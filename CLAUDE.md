@@ -33,4 +33,10 @@ before Grade Mix) and P3b soft clips done. Next: P4/P5 only after the user's go-
 Denoise: P0 implemented (main-rendered hook, main-mix + frame-time dedupe, Identity pass,
 counters, Tools menu controller; user saw Identity unchanged, formal gates NOT RUN). P1 HQDN3D-style
 temporal implemented (hqdn3d-math.cpp mirrors hdr-program-denoise.effect - keep in lock-step);
-gates H-* NOT RUN. Shader pre-flight: tools/check-effect-hlsl.py with DXC. Next: P2 after the user's go-ahead.
+gates H-* NOT RUN. Shader pre-flight: tools/check-effect-hlsl.py with DXC.
+Denoise P2 per docs/denoise/P2_DECISION_RESPONSE.md (Option D; governs P2): spatial B implemented
+(spatial-math.cpp mirrors SpatialH/V in hdr-program-denoise.effect - keep in lock-step; spatial before
+temporal; strengths default 0), A = CPU reference only, D3D11 compute identity spike implemented
+(d3d11-compute.cpp, Windows-only, 3 isolation variants). Gates SP-*/CS-* NOT RUN. Next: user runs P1 on real
+footage + CS gates; A compute only after the spike passes; no P2 defaults/A-vs-B choice before P1 real footage.
+Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

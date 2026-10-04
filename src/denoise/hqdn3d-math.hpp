@@ -58,6 +58,9 @@ double comp(double y, double k);          // F(y) = sign(y) log2(1 + |y|/k)
 double response(double x);                // W(x) = (1 - x^2)^2 on [0, 1), else 0
 double cut_threshold(double sensitivity); // m_cut = 1.2 * 2^(-s/25)
 double smoothstep(double e0, double e1, double x);
+// Chroma distance (design section 2), shared by temporal and spatial:
+// |ca - cb| / ((|ya| + |yb|) / 2 + k) / ln 2
+double chroma_distance(const double ca[3], const double cb[3], double ya, double yb, double k);
 
 struct Rgba {
 	double r = 0, g = 0, b = 0, a = 1;

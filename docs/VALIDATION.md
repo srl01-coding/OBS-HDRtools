@@ -46,6 +46,12 @@ evidence for every result; never infer a result from a different layer.
 | C25 | `test_hqdn3d.cpp`: frame metric float mirror vs double on 100x37, 1000x563, 17x1, 3840x270 (< 1e-5); 1-stop uniform change reads 1.000; identical frames 0 | PASS | |
 | C26 | `test_hqdn3d.cpp`: cut sequence (30 frames A, then B): exactly one reset, first B frame equals B exactly (metric 1.50 vs threshold 0.30); 30-frame dissolve A -> A + 0.6 stop: no reset, mean luma lag 0.0036 with transition protection vs 0.0074 without | PASS | protection ramp/floor rate tightened after the first run showed equal lag with and without |
 | C27 | `tools/check-effect-hlsl.py` (DXC, ps_6_0) on `hdr-program-denoise.effect`: all six pixel shaders compile | PASS | pre-flight only; the OBS log is the real gate |
+| C28 | `test_spatial.cpp`: spatial strength 0 is an exact identity for B (double and float mirror) and A, incl. negative, 60,000-nit and alpha < 1 pixels; black stays black, constant stays constant (1e-12), neutral stays exactly neutral (A and B) | PASS | 2026-10-04 |
+| C29 | `test_spatial.cpp`: no overshoot - one pass of B (window R) and A (whole line) keeps Y and each chroma component inside the input range | PASS | |
+| C30 | `test_spatial.cpp`: mirror symmetry f(flip(x)) = flip(f(x)) in x and y | PASS | B 1.7e-14 (summation order), A 0 (exact by construction) |
+| C31 | `test_spatial.cpp`: B float mirror of SpatialH/SpatialV vs double, R = 6/8/12 | PASS | max rel error 1.4e-5 / 2.5e-5 / 2.9e-5 |
+| C32 | `test_spatial.cpp` synthetic gates (decision section 14), 2 % per-channel Gaussian noise, 18 and 203 nits, strengths solved for sigma_out/sigma_in = 0.70 on luma and on chroma separately; steps 18->203 and 203->1000, rising/falling x vertical/horizontal | PASS | matched S_L / S_C: B R6 3.24/6.28, B R8 3.11/6.02, B R12 2.98/5.75, A 4.85/9.26 (18 nits; 203 nits within 0.1). All four: 10-90 % width increase 0.00 px, overshoot <= 0.22 %, undershoot <= 0.04 % (input noise level), directional width spread 0.00 px. Full table: `docs/HQDN3D_DESIGN.md` 8.6 |
+| C33 | `tools/check-effect-hlsl.py` on `hdr-program-denoise.effect` (eight pixel shaders incl. SpatialH/V and the Exact view); DXC cs_6_0 on the embedded compute identity shader; Windows compile of `d3d11-compute.cpp` and `program-denoise.cpp` (zig, x86_64-windows-gnu) | PASS | pre-flight only; the OBS log and the user's machine are the real gates |
 
 ## Layer 1b - build
 
@@ -173,8 +179,8 @@ counters every 10 s*.
 
 ### Program denoise P1 - HQDN3D-style temporal
 
-Setup as P0. Tools > *HDR Program Denoise...*: Algorithm *HQDN3D-style (temporal)*,
-defaults (temporal luma 4, chroma 6, cut reset on, sensitivity 50, protection on, 0.8),
+Setup as P0. Tools > *HDR Program Denoise...*: Algorithm *HQDN3D-style (spatial +
+temporal)* with spatial luma/chroma 0 (the default), defaults (temporal luma 4, chroma 6, cut reset on, sensitivity 50, protection on, 0.8),
 *Log counters, GPU time and scene-change metric every 10 s* on.
 
 | ID | Test | Expected | Status |
@@ -188,6 +194,30 @@ defaults (temporal luma 4, chroma 6, cut reset on, sensitivity 50, protection on
 | H5 | Fine text / lower third / logo over camera | no smearing of moving graphics; static text unchanged | NOT RUN |
 | H6 | Real camera noise (a6400/a6700), *What was removed* view x16 | grain-like residue only, no edges or detail; *History difference* view shows motion outlines, static areas dark | NOT RUN |
 | H7 | Reset history button; change canvas resolution | `history_resets` +1 each; no frame from the old size | NOT RUN |
+
+### Program denoise P2 - spatial B and the D3D11 compute spike
+
+The algorithm is now called *HQDN3D-style (spatial + temporal)*. Spatial strengths
+default to 0, so the P1 rows above are unchanged. Spatial strengths and the A/B choice
+are **not** final until P1 has run on real footage (decision section 22). Timing is read
+with debug view *Normal*, because the compare views add copies.
+
+| ID | Test | Expected | Status |
+|---|---|---|---|
+| SP-G0 | HQDN3D-style, spatial luma 3 | log: `[denoise] spatial resources created: 2 x 3840x2160 RGBA16F, about 127 MiB`; no `[denoise] failed to compile` | NOT RUN |
+| SP1 | All four strengths 0, Development > *Run spatial passes at strength 0* on, debug view *Exact change* | whole frame black (every value identical through the spatial and temporal shaders); periodic log shows `(forced)` and `spatial_passes` rising with dispatches | NOT RUN |
+| SP2 | *HLG levels only*, spatial luma 6 / chroma 6, temporal 0 | scope identical to Off at every bar (flat fields stay flat; the bar edges are far above any threshold) | NOT RUN |
+| SP3 | Timing: spatial 3/6 with temporal defaults, radius 6, 8 and 12 in turn (*Reset counters*, 30 s each) | `gpu ms ... p95` per radius against P1 alone (tiers in decision section 12: <= 8 ms, 8-15 ms, > 15 ms) | NOT RUN |
+| SP4 | Real camera noise, *What was removed* x16, spatial luma 2-6 (temporal 0, then temporal on) | grain only, no edges, hair, fabric or text structure; record the strength where structure first appears | NOT RUN |
+| SP5 | Spatial on, fast pan / motion | no smearing beyond the temporal behaviour seen in P1 | NOT RUN |
+| CS-G0 | Algorithm *Compute identity (D3D11 spike)* (Windows, D3D11, HDR canvas) | log: `[denoise] D3D11 compute: private RGBA16F 3840x2160 x2 (about 127 MiB), driver command lists yes/no`; no compile error; no warning `compute identity unavailable` | NOT RUN |
+| CS1 | Each variant in turn (Development > *Compute spike variant*), debug view *Exact change* | whole frame black for every variant (exact-value identity through the compute round trip) | NOT RUN |
+| CS2 | Each variant, debug view *Normal*, counter logging on, 30 s after *Reset counters* | `gpu ms ... p95` per variant (gate: <= 1.0 ms preferred, <= 1.5 ms acceptable, at 4K on the 1650 Super); `dispatches == unique frames: OK`, `failures=0` | NOT RUN |
+| CS3 | Compute identity on: Program monitor, preview, multiview, projector, recording and stream (or a local RTMP test) | all identical to Off; recording/stream frames neither duplicated nor stale (counters as D-G1b) | NOT RUN |
+| CS4 | HDR Transform + HDR Color on the camera source, compute identity on | grade and transform unchanged versus Off (OBS graphics state not disturbed) | NOT RUN |
+| CS5 | Change canvas resolution, then back; switch variants and algorithms repeatedly | resources recreated (log line each time), no black frame, no crash | NOT RUN |
+| CS6 | Optional: D3D11 debug layer (Graphics Tools + `--debug`-style run) | no D3D11 errors or hazards from the spike | NOT RUN |
+| CS7 | Renderer set to OpenGL (or SDR canvas) | log once: `compute identity unavailable (...): passing the program through`; picture unchanged | NOT RUN |
 
 ## Layer 3 - production path
 

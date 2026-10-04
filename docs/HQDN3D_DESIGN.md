@@ -325,3 +325,54 @@ actually blurs. It is reported (not gated) so that A and B can be compared there
 
 These are comparison gates, not definitions of image quality. Real footage decides,
 using the removed-signal view (decision sections 15-17 and `docs/denoise/QUALITY_OBJECTIVE.md`).
+
+### 8.6 Synthetic results (CPU, `tests/cpu/test_spatial.cpp`, 2026-10-04)
+
+Measured on the double-precision references. The B shader is mirrored in float and
+agrees within 3e-5 relative.
+
+Columns:
+- *S_L / S_C*: the strength at which σ_out/σ_in reaches the target (luma and chroma
+  solved separately).
+- *dW*: worst 10-90% width increase over rising/falling and vertical/horizontal edges.
+- *+2%, +5%, +10%*: dW on low-contrast steps (informative, not gated).
+
+| Filter | Nits | Target | S_L | S_C | Gated step dW (px) | Overshoot | +2% | +5% | +10% |
+|---|---|---|---|---|---|---|---|---|---|
+| B R=6 | 18 | 0.70 | 3.24 | 6.28 | 0.00 | 0.19% | 0.11 | 0.02 | 0.00 |
+| B R=8 | 18 | 0.70 | 3.11 | 6.02 | 0.00 | 0.19% | 0.11 | 0.02 | 0.00 |
+| B R=12 | 18 | 0.70 | 2.98 | 5.75 | 0.00 | 0.19% | 0.11 | 0.02 | 0.00 |
+| A | 18 | 0.70 | 4.85 | 9.26 | 0.00 | 0.20% | 0.18 | 0.02 | 0.01 |
+| B R=6 | 18 | 0.50 | 4.28 | 8.01 | 0.00 | 0.17% | 2.14 | 0.03 | 0.00 |
+| B R=8 | 18 | 0.50 | 4.11 | 7.68 | 0.00 | 0.17% | 2.27 | 0.03 | 0.00 |
+| B R=12 | 18 | 0.50 | 3.94 | 7.34 | 0.00 | 0.16% | 2.39 | 0.03 | 0.00 |
+| A | 18 | 0.50 | 6.30 | 11.54 | 0.00 | 0.16% | 2.48 | 0.04 | 0.01 |
+
+At 203 nits the strengths and widths are the same within 0.1 and 0.01 px, because
+the comparison is in the log domain and the noise is a fixed percentage. Overshoot
+equals the input profile's own noise (0.2%), and the filters add none.
+
+Reading:
+- **The gated steps do not discriminate.** At the matched point, T (about 0.03 log2
+  units) is about 100 times smaller than either step, so no filter averages across
+  them. The gates pass by construction. This is the design note in 8.5, now confirmed.
+- **Where the filters do blur.**
+  - At 0.70 noise reduction, only a step at the noise amplitude (+2%) is touched, and
+    by at most 0.2 px.
+  - At 0.50, that step is widened by 2.1 to 2.5 px. A +5% step is still essentially
+    untouched (≤ 0.04 px).
+  - The filters trade noise for blur only for detail that is comparable with the noise
+    itself. That is the expected edge-aware behaviour, not a defect.
+- **Radius.** R = 6, 8 and 12 differ by at most about 0.25 px on the +2% step at the
+  0.50 point (larger R blurs slightly more and needs slightly lower S). On white noise
+  the edge function, not the radius, limits the kernel, so R = 6 is enough. Camera noise
+  is spatially correlated (demosaic, in-camera processing, codec), and correlated noise
+  benefits from a larger support. R therefore stays provisional at 8 until real footage
+  has been measured. R = 6 is the cheaper choice if footage shows no difference.
+- **A against B.** At matched noise reduction, A is not better than B on these
+  synthetic tests: it is marginally softer on the +2% step at 0.70 (0.18 against 0.11
+  px). It needs higher strength values for the same reduction, because its weights
+  compare against a smoothed running value. Its expected advantage is unbounded
+  propagation through large flat or correlated-noise areas, and white-noise flat fields
+  do not test that. The A/B choice therefore rests on real footage and on the codec test
+  (decision sections 15-17), as planned.

@@ -8,6 +8,8 @@
 // HQDN3D-style temporal (P1): docs/HQDN3D_DESIGN.md. Independent implementation, no
 // FFmpeg/MPlayer code. Mirrored line for line in src/denoise/hqdn3d-math.cpp
 // (temporal_pixel_f, global_factor_f, frame_metric_f) and tested there.
+// HQDN3D-style spatial B (P2): design section 8.3, mirrored in src/denoise/spatial-math.cpp
+// (spatial_b_pass_f) and tested in tests/cpu/test_spatial.cpp.
 // Note: identifiers avoid GLSL built-in names (mix, floor, sample).
 
 uniform float4x4 ViewProj;
@@ -31,8 +33,11 @@ uniform float protect_amount = 0.8;
 uniform float cut_enabled = 1.0;
 uniform float reset = 0.0;         // history invalid this frame
 uniform float mix_amount = 1.0;
-uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar
+uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar, 4 exact
 uniform float debug_gain = 16.0;
+uniform float s_t_luma = 0.0;      // spatial thresholds, log2 units (0 = off)
+uniform float s_t_chroma = 0.0;
+uniform float s_radius = 8.0;      // 1..12 taps per side
 
 struct VertInOut {
 	float4 pos : POSITION;
@@ -176,6 +181,62 @@ float4 PSTemporal(VertInOut vert_in) : TARGET
 	return float4(o * units_per_nit, cur.a);
 }
 
+// ---- spatial B: symmetric edge-aware kernel, one axis (design section 8.3) -------
+
+float4 spatial_b(int2 p, int2 dir, int n)
+{
+	float4 ctr = image.Load(int3(p, 0));
+	float3 c0 = ctr.rgb * nits_per_unit;
+	float y0 = luma(c0);
+	float3 ch0 = c0 - float3(y0, y0, y0);
+	float f0 = comp(y0);
+	float sl = 1.0;
+	float sc = 1.0;
+	float yacc = y0;
+	float3 cacc = ch0;
+	float dec = 1.0;
+	int pos = p.x * dir.x + p.y * dir.y;
+	for (int k = 1; k <= 12; k++) {
+		if (float(k) > s_radius)
+			break;
+		dec = dec * 0.9;
+		for (int side = 0; side < 2; side++) {
+			int o = side == 0 ? -k : k;
+			int j = pos + o;
+			if (j >= 0 && j < n) {
+				float3 q = image.Load(int3(p + dir * o, 0)).rgb * nits_per_unit;
+				float yq = luma(q);
+				float3 cq = q - float3(yq, yq, yq);
+				float wl = s_t_luma > 0.0 ? dec * response(abs(comp(yq) - f0) / s_t_luma) : 0.0;
+				float3 dv = cq - ch0;
+				float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yq) + abs(y0)) + knee) * 1.442695041;
+				float wc = s_t_chroma > 0.0 ? dec * response(dc / s_t_chroma) : 0.0;
+				sl = sl + wl;
+				yacc = yacc + wl * yq;
+				sc = sc + wc;
+				cacc = cacc + wc * cq;
+			}
+		}
+	}
+	if (sl == 1.0 && sc == 1.0)
+		return ctr; // exact identity
+	float yo = yacc / sl;
+	float3 o3 = float3(yo, yo, yo) + cacc / sc;
+	return float4(o3 * units_per_nit, ctr.a);
+}
+
+float4 PSSpatialH(VertInOut vert_in) : TARGET
+{
+	int2 p = int2(vert_in.uv * tex_size);
+	return spatial_b(p, int2(1, 0), int(tex_size.x));
+}
+
+float4 PSSpatialV(VertInOut vert_in) : TARGET
+{
+	int2 p = int2(vert_in.uv * tex_size);
+	return spatial_b(p, int2(0, 1), int(tex_size.y));
+}
+
 // ---- output into the program frame (Mix and debug views) -------------------
 
 float4 PSOutput(VertInOut vert_in) : TARGET
@@ -184,6 +245,11 @@ float4 PSOutput(VertInOut vert_in) : TARGET
 	float4 cur = image.Load(int3(p, 0));
 	float4 filt = filt_tex.Load(int3(p, 0));
 
+	if (debug_mode > 3.5) {
+		// exact-value identity check: black = unchanged, magenta = any component changed
+		bool same = filt.r == cur.r && filt.g == cur.g && filt.b == cur.b && filt.a == cur.a;
+		return same ? float4(0.0, 0.0, 0.0, 1.0) : float4(1.0, 0.0, 1.0, 1.0);
+	}
 	if (debug_mode > 2.5) {
 		// scene-change metric bar along the top: green = normal, amber = protecting,
 		// red = cut; white tick = cut threshold, cyan tick = static-noise floor
@@ -264,6 +330,24 @@ technique Temporal
 	{
 		vertex_shader = VSDefault(vert_in);
 		pixel_shader  = PSTemporal(vert_in);
+	}
+}
+
+technique SpatialH
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSSpatialH(vert_in);
+	}
+}
+
+technique SpatialV
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSSpatialV(vert_in);
 	}
 }
 
