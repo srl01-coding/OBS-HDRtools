@@ -1,4 +1,4 @@
-// OBS HDR Toolkit - HDR Color (hdr_toolkit_color_v1), global stages (P2)
+// OBS HDR Toolkit - HDR Color (hdr_toolkit_color_v1): global stages + tonal zones
 // Copyright (C) 2026 srl01-coding, GPL-2.0-or-later
 //
 // Brief sections 5-7. The nits-domain body of PSGrade is mirrored line for
@@ -24,8 +24,36 @@ uniform float3 wheel_delta = {0.0, 0.0, 0.0};
 uniform float saturation = 1.0;
 uniform float grade_mix = 1.0;
 
+// Tonal zones 0..5 = Black, Dark, Shadow, Light, Highlight, Specular.
+// edges = (a, b, c, d) in stops from gray_nits; es = (exposure EV, saturation);
+// wd = wheel delta (k * r * direction, precomputed). Disabled zones are neutral.
+uniform float4 zone_edges0 = {-1000.0, -999.0, -7.0, -4.0};
+uniform float4 zone_edges1 = {-7.0, -5.0, -3.0, -1.0};
+uniform float4 zone_edges2 = {-4.0, -2.0, 0.0, 2.0};
+uniform float4 zone_edges3 = {-1.0, 1.0, 2.0, 4.0};
+uniform float4 zone_edges4 = {2.0, 3.5, 4.5, 6.0};
+uniform float4 zone_edges5 = {4.5, 6.0, 1000.0, 1001.0};
+uniform float2 zone_es0 = {0.0, 1.0};
+uniform float2 zone_es1 = {0.0, 1.0};
+uniform float2 zone_es2 = {0.0, 1.0};
+uniform float2 zone_es3 = {0.0, 1.0};
+uniform float2 zone_es4 = {0.0, 1.0};
+uniform float2 zone_es5 = {0.0, 1.0};
+uniform float3 zone_wd0 = {0.0, 0.0, 0.0};
+uniform float3 zone_wd1 = {0.0, 0.0, 0.0};
+uniform float3 zone_wd2 = {0.0, 0.0, 0.0};
+uniform float3 zone_wd3 = {0.0, 0.0, 0.0};
+uniform float3 zone_wd4 = {0.0, 0.0, 0.0};
+uniform float3 zone_wd5 = {0.0, 0.0, 0.0};
+
+// Diagnostics (technique Mask): 1 = one zone's weight as grey (1.0 = SDR white),
+// 2 = all zones in false colour. Computed from the frozen mask.
+uniform float diag_mode = 0.0;
+uniform float diag_zone = 2.0;
+
 uniform float use_wb = 0.0;
 uniform float use_contrast = 0.0;
+uniform float use_zones = 0.0;
 uniform float use_wheel = 0.0;
 uniform float use_saturation = 0.0;
 uniform float use_mix = 0.0;
@@ -56,17 +84,63 @@ float luma(float3 c)
 	return dot(c, float3(0.212639005871510, 0.715168678767756, 0.072192315360734));
 }
 
+float smooth01(float t)
+{
+	// clamps the mask coordinate only, never RGB
+	float u = clamp(t, 0.0, 1.0);
+	return u * u * (3.0 - 2.0 * u);
+}
+
+float zone_weight(float s, float4 e)
+{
+	float left = smooth01((s - e.x) / (e.y - e.x));
+	float right = 1.0 - smooth01((s - e.z) / (e.w - e.z));
+	return left * right;
+}
+
+float tonal_stop(float3 c)
+{
+	return log2(max(luma(c), 0.000001) / gray_nits);
+}
+
+float3 wb_exposure(float3 c_in)
+{
+	float3 c = c_in;
+	if (use_wb > 0.5)
+		c = float3(dot(wb_row0, c), dot(wb_row1, c), dot(wb_row2, c));
+	return c * exposure_gain;
+}
+
 float3 grade_nits(float3 c_in)
 {
 	float3 c0 = c_in;
-	float3 c = c_in;
 
-	// white balance (Bradford, precomputed on the CPU)
-	if (use_wb > 0.5)
-		c = float3(dot(wb_row0, c), dot(wb_row1, c), dot(wb_row2, c));
+	// white balance (Bradford, precomputed on the CPU) and global exposure
+	float3 c = wb_exposure(c_in);
 
-	// global exposure
-	c = c * exposure_gain;
+	// tonal-zone masks, computed here and frozen for every zone operation (brief 5.3)
+	float w0 = 0.0;
+	float w1 = 0.0;
+	float w2 = 0.0;
+	float w3 = 0.0;
+	float w4 = 0.0;
+	float w5 = 0.0;
+	if (use_zones > 0.5) {
+		float sm = tonal_stop(c);
+		w0 = zone_weight(sm, zone_edges0);
+		w1 = zone_weight(sm, zone_edges1);
+		w2 = zone_weight(sm, zone_edges2);
+		w3 = zone_weight(sm, zone_edges3);
+		w4 = zone_weight(sm, zone_edges4);
+		w5 = zone_weight(sm, zone_edges5);
+		float zev = w0 * zone_es0.x;
+		zev = zev + w1 * zone_es1.x;
+		zev = zev + w2 * zone_es2.x;
+		zev = zev + w3 * zone_es3.x;
+		zev = zev + w4 * zone_es4.x;
+		zev = zev + w5 * zone_es5.x;
+		c = c * exp2(zev);
+	}
 
 	// contrast around pivot, luminance-domain, sign-preserving gain
 	if (use_contrast > 0.5) {
@@ -75,16 +149,30 @@ float3 grade_nits(float3 c_in)
 		c = c * exp2(contrast_minus_one * (s - log2_pivot_over_gray));
 	}
 
-	// global colour-balance wheel (linear-Y preserving, black stays black)
+	// global + zone colour-balance wheel (linear-Y preserving, black stays black)
 	if (use_wheel > 0.5) {
+		float3 d = wheel_delta;
+		d = d + w0 * zone_wd0;
+		d = d + w1 * zone_wd1;
+		d = d + w2 * zone_wd2;
+		d = d + w3 * zone_wd3;
+		d = d + w4 * zone_wd4;
+		d = d + w5 * zone_wd5;
 		float yw = max(luma(c), 0.0);
-		c = c + wheel_delta * yw;
+		c = c + d * yw;
 	}
 
-	// global saturation (linear-Y preserving)
+	// global x zone saturation (linear-Y preserving; Y recomputed after the wheel)
 	if (use_saturation > 0.5) {
+		float st = saturation;
+		st = st * (1.0 + w0 * (zone_es0.y - 1.0));
+		st = st * (1.0 + w1 * (zone_es1.y - 1.0));
+		st = st * (1.0 + w2 * (zone_es2.y - 1.0));
+		st = st * (1.0 + w3 * (zone_es3.y - 1.0));
+		st = st * (1.0 + w4 * (zone_es4.y - 1.0));
+		st = st * (1.0 + w5 * (zone_es5.y - 1.0));
 		float ys = luma(c);
-		c = float3(ys, ys, ys) + saturation * (c - float3(ys, ys, ys));
+		c = float3(ys, ys, ys) + st * (c - float3(ys, ys, ys));
 	}
 
 	// grade mix with the original (before soft clipping, brief 5.4)
@@ -105,11 +193,60 @@ float4 PSGrade(VertInOut vert_in) : TARGET
 	return float4(graded * px.a, px.a);
 }
 
+// Zone diagnostic: shows where the zones act (frozen mask after WB/exposure).
+float4 PSMask(VertInOut vert_in) : TARGET
+{
+	float4 px = image.Sample(linear_sampler, vert_in.uv);
+	if (px.a <= alpha_epsilon)
+		return px;
+	float3 c = wb_exposure((px.rgb / px.a) * nits_per_unit);
+	float sm = tonal_stop(c);
+	float w0 = zone_weight(sm, zone_edges0);
+	float w1 = zone_weight(sm, zone_edges1);
+	float w2 = zone_weight(sm, zone_edges2);
+	float w3 = zone_weight(sm, zone_edges3);
+	float w4 = zone_weight(sm, zone_edges4);
+	float w5 = zone_weight(sm, zone_edges5);
+	float3 outc;
+	if (diag_mode > 1.5) {
+		outc = w0 * float3(0.25, 0.3, 1.0);
+		outc = outc + w1 * float3(0.1, 0.65, 1.0);
+		outc = outc + w2 * float3(0.1, 0.8, 0.3);
+		outc = outc + w3 * float3(0.95, 0.85, 0.1);
+		outc = outc + w4 * float3(1.0, 0.45, 0.25);
+		outc = outc + w5 * float3(0.9, 0.15, 0.6);
+	} else {
+		float w = w0;
+		if (diag_zone > 0.5)
+			w = w1;
+		if (diag_zone > 1.5)
+			w = w2;
+		if (diag_zone > 2.5)
+			w = w3;
+		if (diag_zone > 3.5)
+			w = w4;
+		if (diag_zone > 4.5)
+			w = w5;
+		outc = float3(w, w, w);
+	}
+	// output in working units: 1.0 = SDR white
+	return float4(outc * px.a, px.a);
+}
+
 technique Grade
 {
 	pass
 	{
 		vertex_shader = VSDefault(vert_in);
 		pixel_shader  = PSGrade(vert_in);
+	}
+}
+
+technique Mask
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSMask(vert_in);
 	}
 }

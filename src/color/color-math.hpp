@@ -23,12 +23,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * tests/cpu/test_color.cpp. Written from the brief's equations.
  *
  * Working units: straight linear Rec.709-primary RGB in nominal nits.
- * P2 implements the global stages of the fixed v1 order (brief 5.3):
+ * Fixed v1 order (brief 5.3):
  *
  *   unpremultiply -> nits -> C0 -> white balance -> global exposure
- *   -> [zone masks + zone exposure: P3] -> contrast around pivot
- *   -> global wheel -> global saturation -> grade mix
- *   -> [low / high soft clip, gamut containment: P3/P5] -> working units -> premultiply
+ *   -> zone masks (computed here and frozen) -> combined zone exposure
+ *   -> contrast around pivot -> global + zone wheel -> global x zone saturation
+ *   -> grade mix -> [low / high soft clip, gamut containment: P3b/P5]
+ *   -> working units -> premultiply
  */
 
 #include <array>
@@ -76,6 +77,43 @@ Vec3 hue_direction(double theta);
 // sensitivity k -> RGB balance delta. Zero radius -> exactly zero.
 Vec3 wheel_delta(double x, double y, double k = 0.5);
 
+// ---- Tonal zones (brief 7.1) -------------------------------------------------
+
+constexpr int kZoneCount = 6;
+enum Zone { ZoneBlack = 0, ZoneDark, ZoneShadow, ZoneLight, ZoneHighlight, ZoneSpecular };
+// Stable machine names used in settings keys (zone_<name>_...).
+extern const char *const kZoneNames[kZoneCount];
+
+// Edges of the open end of Black (a, b) and Specular (c, d). Far outside any
+// reachable stop value (|s| < 40 for every finite float luminance), so the
+// one-sided windows need no special case in the shader.
+constexpr double kOpenLow = -1000.0;
+constexpr double kOpenHigh = 1000.0;
+constexpr double kMinFalloff = 0.05; // stops (brief 7.1)
+constexpr double kEdgeLimit = 20.0;  // stops either side of the gray reference
+
+struct ZoneParams {
+	bool enabled = true;
+	double exposure_ev = 0.0; // +-4
+	double saturation = 1.0;  // 0 .. 2
+	double wheel_x = 0.0;
+	double wheel_y = 0.0;
+	// Stops relative to gray_nits, a < b <= c < d. Black: a, b = open; Specular: c, d = open.
+	double a = 0, b = 0, c = 0, d = 0;
+	bool active() const { return enabled && (exposure_ev != 0 || saturation != 1 || wheel_x != 0 || wheel_y != 0); }
+};
+
+ZoneParams default_zone(int zone);
+std::array<ZoneParams, kZoneCount> default_zones();
+
+// smooth01(t) = t^2 (3 - 2t) on the clamped mask coordinate.
+double smooth01(double t);
+// Window weight at stop value s for edges a < b <= c < d.
+double zone_weight(double s, double a, double b, double c, double d);
+// Tonal coordinate of a luminance: log2(max(Y, eps) / gray). Nonpositive Y maps
+// to the lowest coordinate (Black tail) without a log of a negative number.
+double tonal_stop(double y_nits, double gray_nits);
+
 // ---- Parameters -------------------------------------------------------------
 
 struct GlobalParams {
@@ -89,10 +127,12 @@ struct GlobalParams {
 	double wheel_x = 0.0;     // unit disk
 	double wheel_y = 0.0;
 	double grade_mix = 1.0; // 0 .. 1
+	std::array<ZoneParams, kZoneCount> zones = default_zones();
 };
 
-// Clamp to documented ranges, replace non-finite values with defaults.
-// Returns a list of problems (empty when clean).
+// Clamp to documented ranges, replace non-finite values with defaults, and
+// make zone edges ordered with the minimum falloff (deterministic push upward:
+// b >= a + 0.05, c >= b, d >= c + 0.05). Returns a list of problems (empty when clean).
 std::string sanitize(GlobalParams &p);
 
 bool is_neutral(const GlobalParams &p);
@@ -107,8 +147,13 @@ struct ShaderParams {
 	float wheel_delta[3];
 	float saturation;
 	float grade_mix;
+	// Zones. Disabled zones upload neutral values (ev 0, sat 1, wheel 0).
+	float zone_edges[kZoneCount][4];
+	float zone_ev[kZoneCount];
+	float zone_sat[kZoneCount];
+	float zone_wheel[kZoneCount][3];
 	// Stage enables (uniform branches give exact identity for neutral stages).
-	float use_wb, use_contrast, use_wheel, use_saturation, use_mix;
+	float use_wb, use_contrast, use_zones, use_wheel, use_saturation, use_mix;
 };
 
 bool make_shader_params(const GlobalParams &p, ShaderParams &out, std::string *error = nullptr);
@@ -117,6 +162,9 @@ bool make_shader_params(const GlobalParams &p, ShaderParams &out, std::string *e
 // float mirror of data/effects/hdr-color.effect (PSGrade, nits domain).
 Vec3 reference_grade(const GlobalParams &p, const Vec3 &c_nits);
 std::array<float, 3> shader_grade(const ShaderParams &s, const std::array<float, 3> &c_nits);
+
+// Frozen zone weights for a pixel (after WB and global exposure), double.
+std::array<double, kZoneCount> reference_weights(const GlobalParams &p, const Vec3 &c_nits);
 
 constexpr double kYEpsilonNits = 1e-6;
 

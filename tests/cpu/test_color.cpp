@@ -1,6 +1,7 @@
 // CPU tests for HDR Color global stages (brief 5-7, 11.6). No libobs needed.
 // Build: g++ -std=c++17 -O2 -Isrc tests/cpu/test_color.cpp src/color/color-math.cpp -o test_color
-// Optional: ./test_color --dump-wb  prints WB matrices for tests/cpu/check_wb_vs_brief.py
+// Optional: ./test_color --dump-wb     prints WB matrices for tests/cpu/check_wb_vs_brief.py
+//           ./test_color --dump-zones  prints default zone weights vs stops for tests/cpu/plot_zones.py
 #include "color/color-math.hpp"
 
 #include <cmath>
@@ -41,6 +42,17 @@ int main(int argc, char **argv)
 						std::printf(" %.17g", x);
 				std::printf("\n");
 			}
+		return 0;
+	}
+	if (argc > 1 && std::strcmp(argv[1], "--dump-zones") == 0) {
+		const auto z = default_zones();
+		for (int i = 0; i <= 2000; i++) {
+			const double st = -12.0 + 22.0 * i / 2000.0;
+			std::printf("%.4f", st);
+			for (const auto &q : z)
+				std::printf(" %.6f", zone_weight(st, q.a, q.b, q.c, q.d));
+			std::printf("\n");
+		}
 		return 0;
 	}
 
@@ -231,6 +243,232 @@ int main(int argc, char **argv)
 		p.contrast = 9;
 		const std::string log = sanitize(p);
 		CHECK(p.exposure_ev == 0 && p.contrast == 2 && !log.empty(), "sanitize");
+	}
+
+	// 9. Tonal zones (brief 7.1, 11.6 "Zones").
+	{
+		const auto z = default_zones();
+		auto w = [&](int i, double st) {
+			return zone_weight(st, z[i].a, z[i].b, z[i].c, z[i].d);
+		};
+		// Continuity and range: fine sweep, no jumps, weights in [0, 1].
+		double max_jump = 0;
+		for (int i = 0; i < kZoneCount; i++) {
+			double prev = w(i, -30);
+			for (int k = 1; k <= 60000; k++) {
+				const double st = -30 + 60.0 * k / 60000.0;
+				const double v = w(i, st);
+				CHECK(v >= 0 && v <= 1, "zone %s weight out of [0,1] at %g", kZoneNames[i], st);
+				max_jump = std::fmax(max_jump, std::fabs(v - prev));
+				prev = v;
+			}
+		}
+		// smoothstep max slope 1.5/falloff; narrowest default falloff 1.5 stops, step 0.001
+		std::printf("zone windows: max weight change per 0.001 stop %.3g\n", max_jump);
+		CHECK(max_jump < 0.0011, "zone window discontinuity");
+		// Full-strength plateaus and zeros outside (brief table).
+		const double full[kZoneCount] = {-8, -4, -1, 1.5, 4, 7};
+		const double zero_lo[kZoneCount] = {NAN, -7, -4, -1, 2, 4.5};
+		const double zero_hi[kZoneCount] = {-4, -1, 2, 4, 6, NAN};
+		for (int i = 0; i < kZoneCount; i++) {
+			CHECK(w(i, full[i]) == 1, "zone %s not full strength at %g", kZoneNames[i], full[i]);
+			if (!std::isnan(zero_lo[i]))
+				CHECK(w(i, zero_lo[i]) == 0 && w(i, zero_lo[i] - 3) == 0, "zone %s lower edge",
+				      kZoneNames[i]);
+			if (!std::isnan(zero_hi[i]))
+				CHECK(w(i, zero_hi[i]) == 0 && w(i, zero_hi[i] + 3) == 0, "zone %s upper edge",
+				      kZoneNames[i]);
+		}
+		// Tails: Black covers zero, negative and tiny luminance; Specular covers any highlight.
+		GlobalParams p;
+		for (double y : {0.0, -5.0, 1e-30, 1e-9}) {
+			const auto ww = reference_weights(p, Vec3{y, y, y});
+			CHECK(ww[ZoneBlack] == 1, "Black tail at Y=%g: %g", y, ww[ZoneBlack]);
+		}
+		for (double y : {1152.0, 1e4, 1e6, 6e4 * 203}) {
+			const auto ww = reference_weights(p, Vec3{y, y, y});
+			CHECK(ww[ZoneSpecular] == 1, "Specular tail at %g nits", y);
+		}
+		CHECK(std::isfinite(tonal_stop(-1, 18)) && std::isfinite(tonal_stop(0, 18)), "tonal stop of Y<=0");
+		// Stop markers from the brief: -4 = 1.125, 0 = 18, +2 = 72, +4 = 288, +6 = 1152 nits.
+		CHECK(std::fabs(tonal_stop(1.125, 18) + 4) < 1e-12 && std::fabs(tonal_stop(1152, 18) - 6) < 1e-12,
+		      "stop markers");
+	}
+	{
+		// Isolated zone gain = 2^(w * EV) with the mask frozen at the input level.
+		double worst = 0;
+		for (int zi = 0; zi < kZoneCount; zi++) {
+			GlobalParams p;
+			p.zones[zi].exposure_ev = 2.0;
+			for (int k = 0; k <= 400; k++) {
+				const double st = -12 + 22.0 * k / 400.0;
+				const double y = 18.0 * std::exp2(st);
+				const Vec3 c = {y * 1.1, y, y * 0.7}; // non-neutral: gain must be a pure RGB scale
+				const double yin = dot(kLuma, c);
+				const double wz = zone_weight(tonal_stop(yin, 18), p.zones[zi].a, p.zones[zi].b,
+							      p.zones[zi].c, p.zones[zi].d);
+				const Vec3 r = reference_grade(p, c);
+				for (int i = 0; i < 3; i++)
+					worst = std::fmax(worst, rel(r[i], c[i] * std::exp2(2.0 * wz)));
+			}
+		}
+		std::printf("isolated zone gain vs 2^(w*EV) at the frozen input mask: max rel error %.3g\n", worst);
+		CHECK(worst < 1e-12, "zone gain law");
+
+		// Frozen mask: a Shadow push that lifts pixels into Light territory must not
+		// pick up Light's exposure (masks are not recomputed after zone exposure).
+		GlobalParams p;
+		p.zones[ZoneShadow].exposure_ev = 3;
+		p.zones[ZoneLight].exposure_ev = -3;
+		const double y = 18.0 * std::exp2(-1.0); // Shadow full, Light weight 0
+		const Vec3 r = reference_grade(p, Vec3{y, y, y});
+		CHECK(rel(r[0], y * 8.0) < 1e-12, "mask recomputed after zone exposure (%g vs %g)", r[0], y * 8.0);
+
+		// Overlap combines in EV: weights not normalised.
+		GlobalParams q;
+		q.zones[ZoneShadow].exposure_ev = 1;
+		q.zones[ZoneLight].exposure_ev = 0.5;
+		const double yo = 18.0 * std::exp2(0.5); // inside both windows
+		const auto wo = reference_weights(q, Vec3{yo, yo, yo});
+		CHECK(wo[ZoneShadow] > 0 && wo[ZoneLight] > 0, "overlap fixture");
+		const Vec3 ro = reference_grade(q, Vec3{yo, yo, yo});
+		CHECK(rel(ro[0], yo * std::exp2(wo[ZoneShadow] * 1 + wo[ZoneLight] * 0.5)) < 1e-12, "overlap EV sum");
+
+		// Inactive / changed zones do not alter another zone's strength.
+		GlobalParams a, b2;
+		a.zones[ZoneShadow].exposure_ev = 1;
+		b2 = a;
+		b2.zones[ZoneDark].enabled = false;
+		b2.zones[ZoneLight].a = -3;
+		b2.zones[ZoneLight].b = -2; // Light window widened to overlap Shadow, but Light is neutral
+		for (double st = -6; st <= 3; st += 0.25) {
+			const double yy = 18.0 * std::exp2(st);
+			CHECK(reference_grade(a, Vec3{yy, yy, yy}) == reference_grade(b2, Vec3{yy, yy, yy}),
+			      "neutral/disabled zone changed another zone at %g", st);
+		}
+
+		// Disabled zone with settings contributes nothing; settings are kept.
+		GlobalParams d;
+		d.zones[ZoneHighlight].exposure_ev = 2;
+		d.zones[ZoneHighlight].enabled = false;
+		CHECK(is_neutral(d), "disabled zone not neutral");
+		CHECK(d.zones[ZoneHighlight].exposure_ev == 2, "disabled zone lost its value");
+
+		// Zone saturation: full desaturation where the zone is at full strength, untouched outside.
+		GlobalParams sp;
+		sp.zones[ZoneHighlight].saturation = 0;
+		const double yh = 18.0 * 16.0; // +4 stops: Highlight full
+		const Vec3 col = {yh * 1.5, yh * 0.8, yh * 0.6};
+		const Vec3 rh = reference_grade(sp, col);
+		CHECK(std::fabs(rh[0] - rh[1]) < 1e-9 && std::fabs(rh[1] - rh[2]) < 1e-9, "zone desaturation");
+		const double ys = 18.0 * 0.25; // -2 stops: outside Highlight
+		const Vec3 cs = {ys * 1.5, ys * 0.8, ys * 0.6};
+		CHECK(reference_grade(sp, cs) == cs, "zone saturation leaked outside its window");
+
+		// Zone wheel preserves linear Y and leaves black black.
+		GlobalParams wp;
+		wp.zones[ZoneShadow].wheel_x = 0.4;
+		wp.zones[ZoneShadow].wheel_y = -0.3;
+		const Vec3 cw = {3.0, 4.0, 5.0};
+		const Vec3 rw = reference_grade(wp, cw);
+		CHECK(std::fabs(dot(kLuma, rw) - dot(kLuma, cw)) < 1e-12, "zone wheel changed Y");
+		const Vec3 bw = reference_grade(wp, Vec3{0, 0, 0});
+		CHECK(bw[0] == 0 && bw[1] == 0 && bw[2] == 0, "zone wheel moved black");
+
+		// All zones at defaults (enabled, neutral) = exact identity in reference and mirror.
+		GlobalParams n;
+		ShaderParams ns;
+		CHECK(make_shader_params(n, ns) && ns.use_zones == 0, "neutral zones enabled a stage");
+	}
+	{
+		// Float mirror with random zone grades.
+		std::mt19937_64 r2(23);
+		std::uniform_real_distribution<double> V(0, 1);
+		double worst = 0;
+		for (int i = 0; i < 20000; i++) {
+			GlobalParams p;
+			p.exposure_ev = V(r2) * 4 - 2;
+			p.contrast = 0.7 + V(r2) * 0.8;
+			p.saturation = V(r2) * 2;
+			p.wheel_x = V(r2) - 0.5;
+			p.grade_mix = V(r2);
+			for (auto &z : p.zones) {
+				z.enabled = V(r2) > 0.2;
+				z.exposure_ev = V(r2) * 8 - 4;
+				z.saturation = V(r2) * 2;
+				z.wheel_x = V(r2) * 2 - 1;
+				z.wheel_y = V(r2) * 2 - 1;
+			}
+			sanitize(p);
+			ShaderParams sp;
+			CHECK(make_shader_params(p, sp), "shader params");
+			const double y = std::pow(10.0, V(r2) * 6 - 2);
+			const Vec3 c = {y * (0.2 + V(r2)), y * (0.2 + V(r2)), y * (0.2 + V(r2))};
+			const Vec3 r = reference_grade(p, c);
+			const auto f = shader_grade(sp, {(float)c[0], (float)c[1], (float)c[2]});
+			const double scale = std::fmax(std::fabs(r[0]), std::fmax(std::fabs(r[1]), std::fabs(r[2])));
+			for (int k = 0; k < 3; k++) {
+				CHECK(std::isfinite(f[k]), "mirror not finite");
+				worst = std::fmax(worst, std::fabs(f[k] - r[k]) / std::fmax(scale, 1e-3));
+			}
+		}
+		std::printf("float shader mirror vs double, random zone grades: max error %.3g\n", worst);
+		CHECK(worst < 5e-5, "float mirror error too large with zones");
+	}
+	{
+		// Edge sanitising: deterministic ordering with the minimum falloff.
+		GlobalParams p;
+		p.zones[ZoneShadow].a = 1;
+		p.zones[ZoneShadow].b = 0;
+		p.zones[ZoneShadow].c = -1;
+		p.zones[ZoneShadow].d = -2;
+		p.zones[ZoneBlack].d = -9; // below c = -7
+		p.zones[ZoneSpecular].a = NAN;
+		const std::string log = sanitize(p);
+		const auto &z = p.zones[ZoneShadow];
+		CHECK(z.b == 1 + kMinFalloff && z.c == z.b && z.d == z.c + kMinFalloff, "interior reorder");
+		CHECK(p.zones[ZoneBlack].d == -7 + kMinFalloff, "black reorder");
+		CHECK(p.zones[ZoneSpecular].a == 4.5, "non-finite edge not reset");
+		CHECK(p.zones[ZoneBlack].a == kOpenLow && p.zones[ZoneSpecular].d == kOpenHigh + 1, "open ends");
+		CHECK(!log.empty(), "no sanitize log");
+	}
+
+	{
+		// Tonal order under a single zone push. d log2(Y_out)/ds = 1 + EV * dw/ds and the
+		// smoothstep slope peaks at 1.5 / falloff, so a push keeps tonal order iff
+		// |EV| <= falloff / 1.5 on the falloff it pushes against (documented limit,
+		// brief 7.1 windows; not a clamp).
+		auto min_slope = [](int zi, double ev) {
+			GlobalParams p;
+			p.zones[zi].exposure_ev = ev;
+			double prev_out = -1, worst = 1e9;
+			for (int k = 0; k <= 20000; k++) {
+				const double st = -14 + 26.0 * k / 20000.0;
+				const double y = 18.0 * std::exp2(st);
+				const double out = std::log2(reference_grade(p, Vec3{y, y, y})[0]);
+				if (k)
+					worst = std::fmin(worst, (out - prev_out) / (26.0 / 20000.0));
+				prev_out = out;
+			}
+			return worst;
+		};
+		const auto z = default_zones();
+		for (int i = 0; i < kZoneCount; i++) {
+			const double fall_lo = z[i].b - z[i].a, fall_hi = z[i].d - z[i].c;
+			if (i != ZoneSpecular) { // positive push against the upper falloff
+				const double lim = fall_hi / 1.5;
+				CHECK(min_slope(i, 0.98 * lim) > 0, "%s +%.2f EV reversed", kZoneNames[i], 0.98 * lim);
+				CHECK(min_slope(i, 1.1 * lim) < 0, "%s +%.2f EV should reverse", kZoneNames[i],
+				      1.1 * lim);
+			}
+			if (i != ZoneBlack) { // negative push against the lower falloff
+				const double lim = fall_lo / 1.5;
+				CHECK(min_slope(i, -0.98 * lim) > 0, "%s -%.2f EV reversed", kZoneNames[i], 0.98 * lim);
+				CHECK(min_slope(i, -1.1 * lim) < 0, "%s -%.2f EV should reverse", kZoneNames[i],
+				      1.1 * lim);
+			}
+		}
+		std::printf("zone tonal-order limit |EV| <= falloff/1.5 confirmed for all six default zones\n");
 	}
 
 	std::printf(failures ? "RESULT: FAIL (%d)\n" : "RESULT: PASS\n", failures);

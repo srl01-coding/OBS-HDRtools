@@ -12,7 +12,7 @@ sharing a small colour/rendering support layer:
 | Filter | ID (stable) | Status |
 |---|---|---|
 | HDR Transform | `hdr_toolkit_transform_v1` | P1 Corner Pin (bilinear + projective) implemented; 3D modes, edge AA, mipmapping in P4 |
-| HDR Color | `hdr_toolkit_color_v1` | P2 global stages implemented (WB, exposure, contrast, wheel, saturation, Grade Mix); tonal zones and soft clip in P3, wheel UI and gamut containment in P5 |
+| HDR Color | `hdr_toolkit_color_v1` | P2 global stages (WB, exposure, contrast, wheel, saturation, Grade Mix) and P3 six tonal zones with frozen masks + mask diagnostic implemented; soft clip next (P3b); wheel UI and gamut containment in P5 |
 
 Developer-only objects present in P0:
 
@@ -67,6 +67,7 @@ tests/cpu/
   test_quad.cpp                   geometry, float shader mirror, validation
   test_color.cpp                  colour stages, float shader mirror
   check_wb_vs_brief.py            WB matrices vs the brief's Python reference
+  plot_zones.py                   plot of the default zone windows (stops / nits / HLG %)
 docs/                             this file, COLOR_PIPELINE, STREAMFX_REFERENCE, VALIDATION
 ```
 

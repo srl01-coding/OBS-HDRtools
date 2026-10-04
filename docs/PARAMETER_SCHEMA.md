@@ -32,7 +32,7 @@ Not yet in the schema (later packages, additive with defaults matching v1
 behaviour): `transform_mode` (Corner Pin / Perspective 3D / Orthographic 3D),
 3D parameters, `edge_aa`, pixel / legacy-centred unit display.
 
-## hdr_toolkit_color_v1 (schema_version 1, P2 global stages)
+## hdr_toolkit_color_v1 (schema_version 1: P2 global stages + P3 tonal zones)
 
 | Key | Type | Default | UI range | Meaning |
 |---|---|---|---|---|
@@ -47,15 +47,48 @@ behaviour): `transform_mode` (Corner Pin / Perspective 3D / Orthographic 3D),
 | `global_wheel_x`, `global_wheel_y` | double | 0, 0 | -1..1 | Colour-balance wheel; hue = atan2(y, x) with 0 deg = red, radius clamped to 1, sensitivity k = 0.5. `C += k r d(hue) Y`, d luminance-orthogonal |
 | `grade_mix` | double | 1 | 0..1 | Linear-light mix of the original and graded colour (brief 5.4); soft clips (P3) will run after it |
 | `force_render_identity` | bool | false | | Diagnostic: run the shader even when the grade is neutral |
+| `diag_view` | int | 0 | | 0 off, 1 one zone's mask as grey (1.0 = SDR white), 2 all zones in false colour. Unknown values -> 0 |
+| `diag_zone` | int | 2 | 0..5 | Zone shown by `diag_view` 1 |
 
-Processing order (brief 5.3; P2 implements the stages marked *):
-unpremultiply -> nominal nits -> C0 -> WB* -> exposure* -> [zone masks, zone exposure: P3] ->
-contrast* -> global* [+ zone: P3] wheel -> global* [+ zone: P3] saturation -> Grade Mix* ->
-[low soft clip, high soft clip, gamut containment: P3/P5] -> working units -> premultiply.
+### Tonal zones
 
-The P3 stages slot into this order with neutral defaults (zones disabled, soft
-clips off), so a scene saved with schema 1 renders identically after P3
-without a migration. Any change to the order, WB mapping, wheel sensitivity or
+`<z>` is one of `black`, `dark`, `shadow`, `light`, `highlight`, `specular`.
+
+| Key | Type | Default | UI range | Meaning |
+|---|---|---|---|---|
+| `zone_<z>_enabled` | bool | true | | Disabled zones contribute neutral values; their settings are kept |
+| `zone_<z>_exposure_ev` | double | 0 | -4..4 | `C *= 2^(sum w_i EV_i)`, masks frozen after WB + global exposure |
+| `zone_<z>_saturation` | double | 1 | 0..2 | `S = S_global * prod(1 + w_i (S_i - 1))` |
+| `zone_<z>_wheel_x`, `_wheel_y` | double | 0 | -1..1 | Added to the global wheel delta weighted by w_i |
+| `zone_<z>_a`, `_b`, `_c`, `_d` | double | brief 7.1 table | -20..20 | **Canonical** window edges in stops from `gray_reference_nits`, a < b <= c < d. Black stores only `c`, `d` (open below); Specular only `a`, `b` (open above) |
+| `zone_<z>_center`, `_width`, `_fall_lo`, `_fall_hi` | double | from edges | | UI mirror for interior zones: b = centre - width/2, c = centre + width/2, a = b - fall_lo, d = c + fall_hi |
+| `zone_black_boundary`, `_falloff` / `zone_specular_boundary`, `_falloff` | double | from edges | | UI mirror: Black c = boundary, d = c + falloff; Specular b = boundary, a = b - falloff |
+
+Default edges (stops): Black full below -7, out by -4; Dark -7/-5/-3/-1; Shadow
+-4/-2/0/2; Light -1/1/2/4; Highlight 2/3.5/4.5/6; Specular in from 4.5, full above 6.
+At an 18-nit gray: -4 = 1.125, 0 = 18, +2 = 72, +4 = 288, +6 = 1152 nits.
+
+Window: `w = smooth01((s-a)/(b-a)) * (1 - smooth01((s-c)/(d-c)))`, smooth01 =
+smoothstep on the clamped mask coordinate; `s = log2(max(Y, 1e-6) / gray)`, so
+Y <= 0 falls in the Black tail. Weights are not normalised. Edge validation is
+deterministic: clamp to +-20, then b >= a + 0.05, c >= b, d >= c + 0.05 (logged).
+The UI mirror is regenerated from the edges on every update, so scripts should
+set the edges.
+
+Tonal-order property (tested, C19): a single zone push keeps tonal order iff
+|EV| <= falloff / 1.5 on the falloff it pushes against (smoothstep slope peaks at
+1.5 / falloff). Larger pushes are allowed (brief range +-4 EV) and can make
+tones in the falloff cross over; the UI says so.
+
+Processing order (brief 5.3; implemented stages marked *):
+unpremultiply -> nominal nits -> C0 -> WB* -> exposure* -> zone masks (frozen)* ->
+zone exposure* -> contrast* -> global + zone wheel* -> global x zone saturation* ->
+Grade Mix* -> [low soft clip, high soft clip: P3b; gamut containment: P5] ->
+working units -> premultiply.
+
+The zone stage was added with neutral defaults, and the soft clips will
+default to off, so a scene saved by the P2 build renders identically without a
+migration. Any change to the order, WB mapping, wheel sensitivity or
 contrast law needs schema 2 and a migration (brief 10.4).
 
 Out-of-range values (e.g. a hand-edited scene file) are clamped to the UI range

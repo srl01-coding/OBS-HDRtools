@@ -240,6 +240,49 @@ static void clampv(double &v, double lo, double hi, double def, const char *name
 	}
 }
 
+const char *const kZoneNames[kZoneCount] = {"black", "dark", "shadow", "light", "highlight", "specular"};
+
+ZoneParams default_zone(int zone)
+{
+	// Brief 7.1 table (project defaults, stops relative to gray_nits).
+	static const double e[kZoneCount][4] = {
+		{kOpenLow, kOpenLow + 1, -7, -4},   {-7, -5, -3, -1}, {-4, -2, 0, 2}, {-1, 1, 2, 4}, {2, 3.5, 4.5, 6},
+		{4.5, 6, kOpenHigh, kOpenHigh + 1},
+	};
+	ZoneParams z;
+	z.a = e[zone][0];
+	z.b = e[zone][1];
+	z.c = e[zone][2];
+	z.d = e[zone][3];
+	return z;
+}
+
+std::array<ZoneParams, kZoneCount> default_zones()
+{
+	std::array<ZoneParams, kZoneCount> z;
+	for (int i = 0; i < kZoneCount; i++)
+		z[i] = default_zone(i);
+	return z;
+}
+
+double smooth01(double t)
+{
+	t = std::clamp(t, 0.0, 1.0); // the mask coordinate, never RGB
+	return t * t * (3.0 - 2.0 * t);
+}
+
+double zone_weight(double s, double a, double b, double c, double d)
+{
+	const double left = smooth01((s - a) / (b - a));
+	const double right = 1.0 - smooth01((s - c) / (d - c));
+	return left * right;
+}
+
+double tonal_stop(double y, double gray)
+{
+	return std::log2(std::max(y, kYEpsilonNits) / gray);
+}
+
 std::string sanitize(GlobalParams &p)
 {
 	std::string log;
@@ -253,14 +296,70 @@ std::string sanitize(GlobalParams &p)
 	clampv(p.wheel_x, -1, 1, 0, "wheel x", log);
 	clampv(p.wheel_y, -1, 1, 0, "wheel y", log);
 	clampv(p.grade_mix, 0, 1, 1, "grade mix", log);
+	for (int i = 0; i < kZoneCount; i++) {
+		ZoneParams &z = p.zones[i];
+		const ZoneParams def = default_zone(i);
+		const std::string n = std::string(kZoneNames[i]) + " ";
+		clampv(z.exposure_ev, -4, 4, 0, (n + "exposure").c_str(), log);
+		clampv(z.saturation, 0, 2, 1, (n + "saturation").c_str(), log);
+		clampv(z.wheel_x, -1, 1, 0, (n + "wheel x").c_str(), log);
+		clampv(z.wheel_y, -1, 1, 0, (n + "wheel y").c_str(), log);
+		if (i == ZoneBlack) {
+			z.a = def.a;
+			z.b = def.b;
+		} else {
+			clampv(z.a, -kEdgeLimit, kEdgeLimit, def.a, (n + "edge a").c_str(), log);
+			clampv(z.b, -kEdgeLimit, kEdgeLimit, def.b, (n + "edge b").c_str(), log);
+		}
+		if (i == ZoneSpecular) {
+			z.c = def.c;
+			z.d = def.d;
+		} else {
+			clampv(z.c, -kEdgeLimit, kEdgeLimit, def.c, (n + "edge c").c_str(), log);
+			clampv(z.d, -kEdgeLimit, kEdgeLimit, def.d, (n + "edge d").c_str(), log);
+		}
+		const ZoneParams before = z;
+		if (i != ZoneBlack)
+			z.b = std::max(z.b, z.a + kMinFalloff);
+		if (i != ZoneBlack && i != ZoneSpecular)
+			z.c = std::max(z.c, z.b);
+		if (i != ZoneSpecular)
+			z.d = std::max(z.d, z.c + kMinFalloff);
+		if (z.b != before.b || z.c != before.c || z.d != before.d)
+			log += n + "edges reordered; ";
+	}
 	return log;
 }
 
 bool is_neutral(const GlobalParams &p)
 {
-	return p.exposure_ev == 0 && p.contrast == 1 && p.saturation == 1 && p.wb_mired == 0 && p.wb_tint == 0 &&
-	       p.wheel_x == 0 && p.wheel_y == 0;
+	if (!(p.exposure_ev == 0 && p.contrast == 1 && p.saturation == 1 && p.wb_mired == 0 && p.wb_tint == 0 &&
+	      p.wheel_x == 0 && p.wheel_y == 0))
+		return false;
+	for (const ZoneParams &z : p.zones)
+		if (z.active())
+			return false;
+	return true;
 	// grade_mix is irrelevant when the grade itself is neutral.
+}
+
+struct StageUse {
+	bool zones = false, wheel = false, saturation = false;
+};
+
+static StageUse stage_use(const GlobalParams &p)
+{
+	StageUse u;
+	u.wheel = p.wheel_x != 0 || p.wheel_y != 0;
+	u.saturation = p.saturation != 1.0;
+	for (const ZoneParams &z : p.zones) {
+		if (!z.active())
+			continue;
+		u.zones = true;
+		u.wheel = u.wheel || z.wheel_x != 0 || z.wheel_y != 0;
+		u.saturation = u.saturation || z.saturation != 1.0;
+	}
+	return u;
 }
 
 bool make_shader_params(const GlobalParams &p, ShaderParams &s, std::string *error)
@@ -280,17 +379,31 @@ bool make_shader_params(const GlobalParams &p, ShaderParams &s, std::string *err
 		s.wheel_delta[i] = (float)wd[i];
 	s.saturation = (float)p.saturation;
 	s.grade_mix = (float)p.grade_mix;
+	for (int i = 0; i < kZoneCount; i++) {
+		const ZoneParams &z = p.zones[i];
+		s.zone_edges[i][0] = (float)z.a;
+		s.zone_edges[i][1] = (float)z.b;
+		s.zone_edges[i][2] = (float)z.c;
+		s.zone_edges[i][3] = (float)z.d;
+		const bool on = z.active();
+		s.zone_ev[i] = on ? (float)z.exposure_ev : 0.0f;
+		s.zone_sat[i] = on ? (float)z.saturation : 1.0f;
+		const Vec3 zd = on ? wheel_delta(z.wheel_x, z.wheel_y) : Vec3{0, 0, 0};
+		for (int k = 0; k < 3; k++)
+			s.zone_wheel[i][k] = (float)zd[k];
+	}
+	const StageUse u = stage_use(p);
 	s.use_wb = (p.wb_mired != 0 || p.wb_tint != 0) ? 1.0f : 0.0f;
 	s.use_contrast = p.contrast != 1.0 ? 1.0f : 0.0f;
-	s.use_wheel = (p.wheel_x != 0 || p.wheel_y != 0) ? 1.0f : 0.0f;
-	s.use_saturation = p.saturation != 1.0 ? 1.0f : 0.0f;
+	s.use_zones = u.zones ? 1.0f : 0.0f;
+	s.use_wheel = u.wheel ? 1.0f : 0.0f;
+	s.use_saturation = u.saturation ? 1.0f : 0.0f;
 	s.use_mix = p.grade_mix != 1.0 ? 1.0f : 0.0f;
 	return true;
 }
 
-Vec3 reference_grade(const GlobalParams &p, const Vec3 &in)
+static Vec3 wb_and_exposure(const GlobalParams &p, const Vec3 &in)
 {
-	const Vec3 c0 = in;
 	Vec3 c = in;
 	if (p.wb_mired != 0 || p.wb_tint != 0) {
 		Mat3 wb;
@@ -300,6 +413,44 @@ Vec3 reference_grade(const GlobalParams &p, const Vec3 &in)
 	const double g = std::exp2(p.exposure_ev);
 	for (double &x : c)
 		x *= g;
+	return c;
+}
+
+static std::array<double, kZoneCount> weights_at(const GlobalParams &p, const Vec3 &c)
+{
+	std::array<double, kZoneCount> w;
+	const double s = tonal_stop(dot(kLuma, c), p.gray_nits);
+	for (int i = 0; i < kZoneCount; i++) {
+		const ZoneParams &z = p.zones[i];
+		w[i] = zone_weight(s, z.a, z.b, z.c, z.d);
+	}
+	return w;
+}
+
+std::array<double, kZoneCount> reference_weights(const GlobalParams &p, const Vec3 &in)
+{
+	return weights_at(p, wb_and_exposure(p, in));
+}
+
+// Written directly from brief 5.3 / 7.1-7.5 (independently of the shader).
+Vec3 reference_grade(const GlobalParams &p, const Vec3 &in)
+{
+	const Vec3 c0 = in;
+	const StageUse u = stage_use(p);
+	Vec3 c = wb_and_exposure(p, in);
+
+	// Masks frozen here: nothing below recomputes membership.
+	std::array<double, kZoneCount> w{};
+	if (u.zones) {
+		w = weights_at(p, c);
+		double zone_ev = 0;
+		for (int i = 0; i < kZoneCount; i++)
+			if (p.zones[i].active())
+				zone_ev += w[i] * p.zones[i].exposure_ev;
+		const double g = std::exp2(zone_ev);
+		for (double &x : c)
+			x *= g;
+	}
 	if (p.contrast != 1.0) {
 		const double y = dot(kLuma, c);
 		const double s = std::log2(std::max(std::fabs(y), kYEpsilonNits) / p.gray_nits);
@@ -308,16 +459,27 @@ Vec3 reference_grade(const GlobalParams &p, const Vec3 &in)
 		for (double &x : c)
 			x *= k;
 	}
-	if (p.wheel_x != 0 || p.wheel_y != 0) {
+	if (u.wheel) {
+		Vec3 delta = wheel_delta(p.wheel_x, p.wheel_y);
+		for (int i = 0; i < kZoneCount; i++) {
+			if (!p.zones[i].active())
+				continue;
+			const Vec3 zd = wheel_delta(p.zones[i].wheel_x, p.zones[i].wheel_y);
+			for (int k = 0; k < 3; k++)
+				delta[k] += w[i] * zd[k];
+		}
 		const double y = std::max(dot(kLuma, c), 0.0);
-		const Vec3 d = wheel_delta(p.wheel_x, p.wheel_y);
-		for (int i = 0; i < 3; i++)
-			c[i] += y * d[i];
+		for (int k = 0; k < 3; k++)
+			c[k] += y * delta[k];
 	}
-	if (p.saturation != 1.0) {
+	if (u.saturation) {
+		double st = p.saturation;
+		for (int i = 0; i < kZoneCount; i++)
+			if (p.zones[i].active())
+				st *= 1.0 + w[i] * (p.zones[i].saturation - 1.0);
 		const double y = dot(kLuma, c);
 		for (double &x : c)
-			x = y + p.saturation * (x - y);
+			x = y + st * (x - y);
 	}
 	if (p.grade_mix != 1.0)
 		for (int i = 0; i < 3; i++)
@@ -326,9 +488,26 @@ Vec3 reference_grade(const GlobalParams &p, const Vec3 &in)
 }
 
 // Float mirror of PSGrade's nits-domain body in data/effects/hdr-color.effect.
+// Keep in lock-step with the effect, line for line.
+static float smooth01f(float t)
+{
+	t = std::clamp(t, 0.0f, 1.0f);
+	return t * t * (3.0f - 2.0f * t);
+}
+
+static float zone_weightf(float s, const float e[4])
+{
+	const float left = smooth01f((s - e[0]) / (e[1] - e[0]));
+	const float right = 1.0f - smooth01f((s - e[2]) / (e[3] - e[2]));
+	return left * right;
+}
+
 std::array<float, 3> shader_grade(const ShaderParams &s, const std::array<float, 3> &in)
 {
 	const float lr = (float)kLuma[0], lg = (float)kLuma[1], lb = (float)kLuma[2];
+	auto luma = [&](const std::array<float, 3> &v) {
+		return lr * v[0] + lg * v[1] + lb * v[2];
+	};
 	const std::array<float, 3> c0 = in;
 	std::array<float, 3> c = in;
 	if (s.use_wb > 0.5f) {
@@ -339,22 +518,42 @@ std::array<float, 3> shader_grade(const ShaderParams &s, const std::array<float,
 	}
 	for (float &x : c)
 		x *= s.exposure_gain;
+
+	float w[kZoneCount] = {0, 0, 0, 0, 0, 0};
+	if (s.use_zones > 0.5f) {
+		const float sm = std::log2(std::max(luma(c), 0.000001f) / s.gray_nits);
+		float zev = 0.0f;
+		for (int i = 0; i < kZoneCount; i++) {
+			w[i] = zone_weightf(sm, s.zone_edges[i]);
+			zev += w[i] * s.zone_ev[i];
+		}
+		const float g = std::exp2(zev);
+		for (float &x : c)
+			x *= g;
+	}
 	if (s.use_contrast > 0.5f) {
-		const float y = lr * c[0] + lg * c[1] + lb * c[2];
+		const float y = luma(c);
 		const float st = std::log2(std::max(std::fabs(y), 0.000001f) / s.gray_nits);
 		const float k = std::exp2(s.contrast_minus_one * (st - s.log2_pivot_over_gray));
 		for (float &x : c)
 			x *= k;
 	}
 	if (s.use_wheel > 0.5f) {
-		const float y = std::max(lr * c[0] + lg * c[1] + lb * c[2], 0.0f);
-		for (int i = 0; i < 3; i++)
-			c[i] += y * s.wheel_delta[i];
+		float d[3] = {s.wheel_delta[0], s.wheel_delta[1], s.wheel_delta[2]};
+		for (int i = 0; i < kZoneCount; i++)
+			for (int k = 0; k < 3; k++)
+				d[k] += w[i] * s.zone_wheel[i][k];
+		const float y = std::max(luma(c), 0.0f);
+		for (int k = 0; k < 3; k++)
+			c[k] += d[k] * y;
 	}
 	if (s.use_saturation > 0.5f) {
-		const float y = lr * c[0] + lg * c[1] + lb * c[2];
+		float st = s.saturation;
+		for (int i = 0; i < kZoneCount; i++)
+			st *= 1.0f + w[i] * (s.zone_sat[i] - 1.0f);
+		const float y = luma(c);
 		for (float &x : c)
-			x = y + s.saturation * (x - y);
+			x = y + st * (x - y);
 	}
 	if (s.use_mix > 0.5f)
 		for (int i = 0; i < 3; i++)
