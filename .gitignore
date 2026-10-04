@@ -19,6 +19,8 @@
 !THIRD_PARTY_NOTICES.md
 !/docs
 !/tests
+!/tools
+!/third_party
 
 # Exclude lock files
 *.lock.json

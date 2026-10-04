@@ -51,6 +51,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "hqdn3d-math.hpp"
 #include "spatial-math.hpp"
 #include "d3d11-compute.hpp"
+#include "nvof-probe.hpp"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
@@ -913,6 +914,12 @@ bool reset_clicked(obs_properties_t *, obs_property_t *, void *)
 	return false;
 }
 
+bool nvof_probe_clicked(obs_properties_t *, obs_property_t *, void *)
+{
+	hdrtk::denoise::nvof_probe_async();
+	return false;
+}
+
 bool reset_history_clicked(obs_properties_t *, obs_property_t *, void *)
 {
 	if (g)
@@ -987,6 +994,9 @@ obs_properties_t *ctl_properties(void *)
 		obs_property_list_add_int(p, obs_module_text("Denoise.ComputeVariant.Deferred"),
 					  compute::VariantDeferred);
 	}
+	if (hdrtk::denoise::nvof_probe_available())
+		obs_properties_add_button2(dev, "nvof_probe", obs_module_text("Denoise.NvofProbe"), nvof_probe_clicked,
+					   nullptr);
 	obs_properties_add_group(props, "dev", obs_module_text("Denoise.Dev"), OBS_GROUP_NORMAL, dev);
 	return props;
 }

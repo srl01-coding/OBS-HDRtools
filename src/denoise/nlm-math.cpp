@@ -36,6 +36,7 @@ void sanitize(NlmParams &p)
 	cl(p.k_nits, 0.001, 10, 0.1);
 	cl(p.lambda, 0, 10, 0);
 	cl(p.cap, 0, 1, 0.9);
+	cl(p.tgain, 0, 16, 1);
 	p.patch = std::clamp(p.patch, 0, 4);
 	p.search = std::clamp(p.search, 0, 10);
 	p.tsearch = std::clamp(p.tsearch, 0, 10);
@@ -229,8 +230,8 @@ void nlm_naive(const NlmParams &p, const NlmFrame &f, Image &out)
 				D *= inv;
 				double wl = weight(D, hl), wc = weight(D, hc);
 				if (c.temporal) {
-					wl *= f.g;
-					wc *= f.g;
+					wl *= f.g * p.tgain;
+					wc *= f.g * p.tgain;
 				}
 				if (wl == 0 && wc == 0)
 					continue;
@@ -299,8 +300,8 @@ void nlm_offset_share(const NlmParams &p, const NlmFrame &f, Image &out, std::ve
 				const double D = s * inv;
 				double wl = weight(D, hl), wc = weight(D, hc);
 				if (c.temporal) {
-					wl *= f.g;
-					wc *= f.g;
+					wl *= f.g * p.tgain;
+					wc *= f.g * p.tgain;
 				}
 				if (wl == 0 && wc == 0)
 					continue;

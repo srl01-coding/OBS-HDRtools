@@ -54,9 +54,13 @@ target_sources(
     src/denoise/d3d11-compute.hpp
     src/denoise/hqdn3d-math.cpp
     src/denoise/hqdn3d-math.hpp
+    src/denoise/nvof-probe.cpp
+    src/denoise/nvof-probe.hpp
     src/denoise/program-denoise.cpp
     src/denoise/spatial-math.cpp
     src/denoise/spatial-math.hpp
 )
+
+target_include_directories(${CMAKE_PROJECT_NAME} SYSTEM PRIVATE third_party/nvof third_party/nvof/shim)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
