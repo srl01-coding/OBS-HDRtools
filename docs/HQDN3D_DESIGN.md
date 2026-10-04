@@ -14,8 +14,8 @@ The FFmpeg implementation is not used. This design differs from it structurally:
 - the response curve is our own closed form, with no lookup tables;
 - cut detection and transition protection are added.
 
-Status: **P1 = temporal only.** The spatial part (P2) gets its own section when it is
-designed.
+Status: P1 temporal (sections 1-7) and P2 spatial (section 8). P2 follows the decision
+in `docs/denoise/P2_DECISION_RESPONSE.md` (Option D).
 
 ## 1. Signal
 
@@ -172,8 +172,156 @@ It covers:
 - A history-weight cap (β = 0.9) so that nothing freezes.
 - Chroma difference measured relative to luminance.
 - Cut reset and transition protection added; they are not part of HQDN3D.
-- P1 is temporal only. The spatial part (P2) is a separate design step: either a
-  recursive GPU pass (D3D11 compute) or a labelled "HQDN3D-style" separable
-  approximation.
+- The spatial part (section 8) is bidirectional: there is no left-to-right or
+  top-to-bottom bias.
 
 Because of these differences the UI calls the mode **HQDN3D-style**.
+
+## 8. Spatial (P2)
+
+Decision: `docs/denoise/P2_DECISION_RESPONSE.md`. There are two spatial filters:
+- **B, "HQDN3D-style spatial"**: a symmetric kernel, portable, built first.
+- **A, recursive**: a bidirectional separable recursion. It runs as a D3D11 compute
+  shader, and only after the compute identity spike passes on the user's machine.
+
+The CPU reference of A exists now. Neither is the default yet: the P2 strengths and the
+A/B choice wait until P1 has run on real footage.
+
+"Faithful HQDN3D" (decision section 6) means keeping these properties:
+- smoothing that depends nonlinearly on the difference;
+- IIR propagation through similar regions (A only);
+- edge rejection;
+- separate luma and chroma strengths;
+- exact identity at zero strength.
+
+It does not mean keeping FFmpeg's code structure, tables, integer YUV arithmetic,
+one-way causality or numerical output.
+
+### 8.1 Order and composition
+
+```text
+current -> spatial -> temporal -> output
+                        |-> temporal history (stores the temporal result)
+```
+
+- The frame metric (section 4) and the temporal recurrence both read the spatially
+  filtered current frame, so history and current are compared like with like.
+- Stored history is never spatially re-filtered.
+- Mix and the Difference view still compare against the unfiltered input, so the
+  Difference view shows `input - output` for spatial and temporal together.
+
+Composition:
+- spatial = 0 is exactly P1;
+- temporal = 0 is spatial only (the temporal pass is then an exact identity);
+- both = 0 is an exact identity.
+
+### 8.2 Shared quantities
+
+Same representation as P1 (sections 1-2): Y, c = RGB - Y, F with knee K, and W(x) =
+(1 - x²)². Also:
+
+```text
+T_L = 0.01 * S_L     T_C = 0.01 * S_C      spatial strengths S in 0..20
+beta_s = 0.9
+dL(a, b) = |F(Y_a) - F(Y_b)|
+dC(a, b) = |c_a - c_b| / ((|Y_a| + |Y_b|) / 2 + K) / ln 2      (the P1 chroma distance)
+```
+
+Both filters are separable: horizontal first, then vertical. The vertical pass
+compares and averages the output of the horizontal pass. Samples outside the frame do
+not exist: they get weight 0 and are not clamped or mirrored. Alpha is passed through
+from the input pixel.
+
+### 8.3 B - HQDN3D-style spatial (symmetric kernel)
+
+Along one axis, for the centre sample x and offsets k = -R..R:
+
+```text
+wL(0) = wC(0) = 1
+wL(k) = beta_s^|k| * W(dL(x+k, x) / T_L)        (0 if T_L <= 0)
+wC(k) = beta_s^|k| * W(dC(x+k, x) / T_C)        (0 if T_C <= 0)
+Y_out = sum wL(k) Y[x+k] / sum wL(k)
+c_out = sum wC(k) c[x+k] / sum wC(k)            (per component)
+RGB_out = Y_out + c_out
+```
+
+- **Exact identity.** If every off-centre weight is 0 for both luma and chroma, the
+  output is the input sample unchanged. Y + (RGB - Y) is not bit-exact in floating
+  point, so the shader returns the sample directly. This covers S = 0, and also pixels
+  whose neighbours all differ by more than T.
+- **Radius.** R is chosen by measurement from 6, 8 and 12 (decision section 9). It is a
+  development option, not normal UI. The provisional value is 8.
+- **Bounds.**
+  - Y_out and each component of c_out are convex combinations of the input, so they
+    have no overshoot.
+  - The kernel is symmetric, so a mirrored input gives a mirrored output. Floating-point
+    summation order is the only difference.
+- **Cost.** At R = 8 there are 17 taps per axis, so 34 texel loads per pixel.
+
+B is not a recursive filter. Its reach is limited to R, and its averaging weight comes
+from each sample's difference to the centre, not to a running estimate.
+
+### 8.4 A - bidirectional separable recursion
+
+The recursion along one line, with input p[0..n-1]:
+
+```text
+q[0] = p[0]
+q[i] = (1 - w) p[i] + w q[i-1]     separately for Y (w = wL) and for c (w = wC)
+wL = beta_s * W(dL(p[i], q[i-1]) / T_L)      wC = beta_s * W(dC(p[i], q[i-1]) / T_C)
+```
+
+The forward (left to right) and backward (right to left) recursions both run from the
+**same** input. Their results are averaged, so the backward pass never filters the
+forward result a second time:
+
+```text
+H = 0.5 (Hf + Hb)          then on H:          Spatial = 0.5 (Vf + Vb)
+```
+
+- Weights are compared against the running filtered value q[i-1], as in classic
+  HQDN3D. This lets smoothing propagate through a flat region.
+- A step larger than T gives w = 0, which restarts the recursion. Edges pass.
+- Each direction is a convex combination of the input, so the average is too: no
+  overshoot on Y or on c.
+- A mirrored line swaps Hf and Hb, so the result is mirror-symmetric by construction.
+- The same identity rule as B applies: with S = 0, or with every w = 0, the output
+  equals the input.
+
+GPU mapping (P2 compute, after the spike):
+- One thread per line and direction. At 4K that is 2 x 2160 threads for the horizontal
+  pass and 2 x 3840 for the vertical pass, each serial over the line length.
+- Parallelism is therefore low, and memory latency may dominate. Only measurement on
+  the user's machine decides whether this is acceptable (decision section 12 tiers).
+- Splitting lines into overlapping segments would be option C, which is not to be built
+  (decision section 10).
+
+### 8.5 Synthetic gates (decision section 14), CPU
+
+Noise model:
+- deterministic Gaussian noise, independent per channel;
+- σ = 2% of the level on R, G and B; the gates use this σ;
+- flat fields at 18 and 203 nits.
+
+Matched noise reduction:
+- σ is measured on Y (luma) and on c (chroma, RMS over the 3 components).
+- S_L is the smallest strength with σ_out/σ_in ≤ 0.70 on luma.
+- S_C is found the same way on chroma.
+- This is done for each filter (B at R = 6, 8, 12, and A) and each level.
+
+At the matched point, noisy steps are tested: 18 -> 203 and 203 -> 1000 nits, rising and
+falling, as vertical and horizontal edges. Rows are averaged along the edge to give a
+profile.
+- **Edge width:** the increase in 10-90% width is ≤ 1.5 px.
+- **Overshoot and undershoot:** ≤ 2% of the step.
+- **Direction:** rising/falling and horizontal/vertical agree. The CPU reference also
+  checks mirror symmetry directly.
+
+Note on edge strength: both gated steps are 2.3 to 3.5 stops, far above any T at the
+matched point. Pixels across them therefore get weight 0, and the gates are expected to
+pass with a large margin. The informative case is a **low-contrast** step, at 18 -> 21
+and 203 -> 240 nits (about 0.22 and 0.24 stops). That is where an edge-aware filter
+actually blurs. It is reported (not gated) so that A and B can be compared there.
+
+These are comparison gates, not definitions of image quality. Real footage decides,
+using the removed-signal view (decision sections 15-17 and `docs/denoise/QUALITY_OBJECTIVE.md`).
