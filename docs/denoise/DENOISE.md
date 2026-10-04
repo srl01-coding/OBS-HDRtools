@@ -1,7 +1,7 @@
 # HDR Program Denoise - design notes
 
 Governing spec: `docs/denoise/BRIEF_v1.2.md` (the file's own heading says v1.1; the
-user supplied it as v1.2). Status: **P0 implemented, runtime gates NOT RUN.**
+user supplied it as v1.2). Status: **P0 implemented (Identity: user saw no visible change; formal gates NOT RUN). P1 HQDN3D-style temporal implemented, gates NOT RUN.**
 
 ## P0: where the program frame comes from (verified in OBS 32.2.2 source)
 
@@ -73,9 +73,39 @@ Use the obs-color-monitor `hdr-hlg` scopes with target **Program** (it draws
 `obs_render_main_texture()`, i.e. the processed frame). Target *Main view* renders
 the program scene itself and would bypass the hook.
 
+## P1: HQDN3D-style temporal
+
+Specification: `docs/HQDN3D_DESIGN.md` (written first; independent of FFmpeg/MPlayer
+code). Per unique frame, all on the GPU:
+
+```text
+copy main -> cur
+MetricBlocks(cur, hist) -> l1 (w/16 x h/16, R32F)      skipped on reset frames
+MetricReduce(l1)       -> l2 (w/256 x h/256, R32F)
+MetricFinal(l2, prev)  -> metric (1x1 RGBA32F: m, static-noise floor, valid)
+Temporal(cur, hist, metric) -> hist_next               the history update
+Output(cur, hist_next)  -> main texture                Mix and debug views
+```
+
+Each technique sets its parameters again, because `gs_technique_end()` resets them.
+Every pass binds its own render target; the last one (Output) leaves the main
+texture bound, as OBS had it. VRAM: 3 x program-size textures (190 MiB at 4K
+RGBA16F), released when the mode is left.
+
+Telemetry, only while counter logging is on: GPU timer queries and a 1x1 staged
+copy of the metric, read three frames later. That gives `gpu ms avg/p95/max`,
+`metric avg/max` and `cut_resets` (cuts detected by the GPU). The processing path
+itself never reads back.
+
+Not for SDR canvases: on an 8-bit SDR canvas the main texture holds sRGB-encoded
+values, so the luma/log maths runs on encoded values and the history is 8-bit. It
+works but is not the designed case.
+
+Rough cost (estimate, not a measurement): about 7 full-frame RGBA16F reads/writes
+per frame, about 13 GB/s at 4K30 against the 1650 Super's ~190 GB/s, so a few ms.
+
 ## Later packages (from the brief, not started)
 
-* P1 HQDN3D temporal: ping-pong history textures, pixel shader; CPU float mirror.
 * P2 HQDN3D spatial: a faithful recursive pass needs a D3D11 compute shader (OBS's
   graphics API has no compute; `gs_get_device_obj()` / `gs_texture_get_obj()` give
   the native objects) - Windows-only; the GPU-friendly approximation can stay in

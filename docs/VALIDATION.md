@@ -41,6 +41,11 @@ evidence for every result; never infer a result from a different layer.
 | C20 | `test_color.cpp`: toe and shoulder reproduce the brief 8.2 / 8.3 tables; toe F(0)=0, F(L)=L, slope 1 at L, monotonic, never lifts, beta 0 exact identity (several L, beta); shoulder slope 1 at H, monotonic, stays below P over 0.01..1e7 nits (q 0.01..0.95); q = 0 hard cap | PASS | 2026-10-04; `math_check.py` toe/shoulder samples also pass |
 | C21 | `test_color.cpp` in the grade: toe/shoulder as a common RGB gain (ratios kept), Y <= 0 and black untouched, middle region bit-identical, clips still act at Grade Mix 0, enabled clips are not "neutral"; offset added exactly to every channel incl. black, negative kept, mixed by Grade Mix; offset + toe; L > H conflict detected | PASS | |
 | C22 | `test_color.cpp`: float mirror vs double with random offset, clips (incl. q = 0), mix and a zone | PASS | max error 2.0e-6 |
+| C23 | `test_hqdn3d.cpp`: strength 0 and g = 0 are exact identities (double and float mirror); black stays black, constant stays constant, neutral stays neutral; luma and each chroma component never overshoot current/history; finite for negative components and 60,000 nits; a 3-stop change passes untouched | PASS | 2026-10-04 |
+| C24 | `test_hqdn3d.cpp`: static noisy field (0.4 % noise, strength 6): output/input noise std 0.300 (first-order IIR limit for beta 0.9: 0.229); float mirror vs double max error 1.1e-6 | PASS | |
+| C25 | `test_hqdn3d.cpp`: frame metric float mirror vs double on 100x37, 1000x563, 17x1, 3840x270 (< 1e-5); 1-stop uniform change reads 1.000; identical frames 0 | PASS | |
+| C26 | `test_hqdn3d.cpp`: cut sequence (30 frames A, then B): exactly one reset, first B frame equals B exactly (metric 1.50 vs threshold 0.30); 30-frame dissolve A -> A + 0.6 stop: no reset, mean luma lag 0.0036 with transition protection vs 0.0074 without | PASS | protection ramp/floor rate tightened after the first run showed equal lag with and without |
+| C27 | `tools/check-effect-hlsl.py` (DXC, ps_6_0) on `hdr-program-denoise.effect`: all six pixel shaders compile | PASS | pre-flight only; the OBS log is the real gate |
 
 ## Layer 1b - build
 
@@ -162,8 +167,27 @@ counters every 10 s*.
 | D-G1a | Algorithm Off, 30 s, preview only | periodic lines: `unique_program_frames` rises ~300 per 10 s at 30 fps and tracks `obs_total_frames`; `denoise_dispatches=0` | NOT RUN |
 | D-G1b | Algorithm Identity, preview + recording (+ streaming if possible), *Reset counters*, wait 30 s, *Log counters now* | `denoise_dispatches == unique_program_frames` (`dispatches == unique frames: OK`), `unique_program_frames` = `obs_total_frames` (+-1), `history_updates=0`; opening a projector / multiview does not change the rate | NOT RUN |
 | D-G1c | As D-G1b with the recording set to *Rescale output* (a second mix) | `other_mix_skipped` now rises ~30/s; dispatches still == unique frames; the recording is denoise-processed (P0: identical) | NOT RUN |
-| D-G2 | Identity vs Off on *HLG levels only* | identical scope: 0% 64, 10% 152, 20% 239, 30% 327, 40% 414, 50% 502, 60% 590, 70% 677, 75% 721, 80% 765, 90% 852, 100% 940, 105% ~984, 109% ~1019; no hue or alpha change, no new banding | NOT RUN |
+| D-G2 | Identity vs Off on *HLG levels only* | identical scope: 0% 64, 10% 152, 20% 239, 30% 327, 40% 414, 50% 502, 60% 590, 70% 677, 75% 721, 80% 765, 90% 852, 100% 940, 105% ~984, 109% ~1019; no hue or alpha change, no new banding | QUALITATIVE (2026-10-04, user: Identity makes no visible change to the output; exact-value source and scope check not run) |
 | D-G3 | Identity, Chart mode, Studio Mode: transition between the pattern scene and another scene (cut and fade) | Program monitor, scope and recording show the transition unchanged; no frame skipped or doubled (counter check as D-G1b) | NOT RUN |
+
+
+### Program denoise P1 - HQDN3D-style temporal
+
+Setup as P0. Tools > *HDR Program Denoise...*: Algorithm *HQDN3D-style (temporal)*,
+defaults (temporal luma 4, chroma 6, cut reset on, sensitivity 50, protection on, 0.8),
+*Log counters, GPU time and scene-change metric every 10 s* on.
+
+| ID | Test | Expected | Status |
+|---|---|---|---|
+| H-G0 | Select HQDN3D-style | log: `[denoise] temporal resources created: history 2 x 3840x2160 RGBA16F + current frame copy, about 190 MiB`; no `[denoise] failed to compile` | NOT RUN |
+| H-G3 | Temporal luma and chroma 0, *HLG levels only* | scope identical to Off (exact identity branch) | NOT RUN |
+| H1 | Defaults, static *HLG levels only* | scope identical to Off at every bar (0% 64 ... 75% 721 ... 100% 940, 105% ~984, 109% ~1019): constant input stays constant; no drift over minutes | NOT RUN |
+| H1b | Periodic log line | `dispatches == unique frames: OK`; `history_updates == denoise_dispatches`; one `history_resets` when the mode was selected; `gpu ms avg / p95 / max` recorded (P1 timing) | NOT RUN |
+| H3 | Studio Mode, *Cut* transition between two different scenes, after >= 1 s on each; debug view *Scene-change metric bar* | bar turns red for the cut frame; `cut_resets` +1 per cut in the log; no ghost of the previous scene on the first frame (check *What was removed* view: the cut frame shows nothing removed) | NOT RUN |
+| H4 | *Fade* transition, 1 s | bar amber during the fade, no red; `cut_resets` unchanged; no trail or lag at the end of the fade; picture settles without pumping | NOT RUN |
+| H5 | Fine text / lower third / logo over camera | no smearing of moving graphics; static text unchanged | NOT RUN |
+| H6 | Real camera noise (a6400/a6700), *What was removed* view x16 | grain-like residue only, no edges or detail; *History difference* view shows motion outlines, static areas dark | NOT RUN |
+| H7 | Reset history button; change canvas resolution | `history_resets` +1 each; no frame from the old size | NOT RUN |
 
 ## Layer 3 - production path
 

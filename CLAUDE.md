@@ -31,4 +31,6 @@ lock-step). P3 tonal zones implemented; user-directed changes (4 Oct): seven zon
 from +5; schema 4, older settings not migrated (user will regrade). Offset (user-directed,
 before Grade Mix) and P3b soft clips done. Next: P4/P5 only after the user's go-ahead.
 Denoise: P0 implemented (main-rendered hook, main-mix + frame-time dedupe, Identity pass,
-counters, Tools menu controller); gates D-G0..D-G3 NOT RUN. Next: P1 only after P0 passes in OBS.
+counters, Tools menu controller; user saw Identity unchanged, formal gates NOT RUN). P1 HQDN3D-style
+temporal implemented (hqdn3d-math.cpp mirrors hdr-program-denoise.effect - keep in lock-step);
+gates H-* NOT RUN. Shader pre-flight: tools/check-effect-hlsl.py with DXC. Next: P2 after the user's go-ahead.

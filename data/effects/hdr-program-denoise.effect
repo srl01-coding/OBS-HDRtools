@@ -1,15 +1,38 @@
-// OBS HDR Toolkit - program denoise (P0: identity pass)
+// OBS HDR Toolkit - program denoise
 // Copyright (C) 2026 srl01-coding, GPL-2.0-or-later
 //
 // Runs on the finished program frame (OBS main texture, native canvas space,
-// RGBA16F on an HDR canvas). Identity: an exact texel copy with Load (no
-// filtering, no colour conversion, no clamp), drawn back into the main texture
-// with blending and framebuffer sRGB off. It proves the hook is transparent
-// before any denoise maths is added.
+// RGBA16F on an HDR canvas). No decode, encode or clamp; alpha passes through.
+//
+// Identity: exact texel copy (P0 transparency test).
+// HQDN3D-style temporal (P1): docs/HQDN3D_DESIGN.md. Independent implementation, no
+// FFmpeg/MPlayer code. Mirrored line for line in src/denoise/hqdn3d-math.cpp
+// (temporal_pixel_f, global_factor_f, frame_metric_f) and tested there.
+// Note: identifiers avoid GLSL built-in names (mix, floor, sample).
 
 uniform float4x4 ViewProj;
-uniform texture2d image;
-uniform float2 tex_size = {3840.0, 2160.0};
+uniform texture2d image;      // current frame (or a metric level for the reductions)
+uniform texture2d hist_tex;   // temporal history (previous filtered frame)
+uniform texture2d filt_tex;   // this frame's filtered result (output pass)
+uniform texture2d metric_tex; // 1 x 1: r = frame metric m, g = static-noise floor, b = floor valid
+uniform texture2d prev_metric_tex;
+
+uniform float2 tex_size = {3840.0, 2160.0}; // full frame
+uniform float2 in_size = {1.0, 1.0};        // input of a reduction pass
+uniform float2 out_size = {1.0, 1.0};       // render target of the current pass
+
+uniform float nits_per_unit = 203.0;
+uniform float units_per_nit = 0.004926108;
+uniform float knee = 0.1;          // comparison knee K, nits
+uniform float t_luma = 0.0;        // threshold, log2 units (0 = off)
+uniform float t_chroma = 0.0;
+uniform float m_cut = 0.3;
+uniform float protect_amount = 0.8;
+uniform float cut_enabled = 1.0;
+uniform float reset = 0.0;         // history invalid this frame
+uniform float mix_amount = 1.0;
+uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar
+uniform float debug_gain = 16.0;
 
 struct VertInOut {
 	float4 pos : POSITION;
@@ -24,11 +47,179 @@ VertInOut VSDefault(VertInOut vert_in)
 	return vert_out;
 }
 
+float luma(float3 c)
+{
+	return dot(c, float3(0.2126, 0.7152, 0.0722));
+}
+
+// F(y) = sign(y) log2(1 + |y| / K), y in nits
+float comp(float y)
+{
+	float a = log2(1.0 + abs(y) / knee);
+	return y < 0.0 ? -a : a;
+}
+
+float response(float x)
+{
+	float u = 1.0 - x * x;
+	return x < 1.0 ? u * u : 0.0;
+}
+
+// ---- Identity (P0) ----------------------------------------------------------
+
 float4 PSIdentity(VertInOut vert_in) : TARGET
 {
-	// uv at a pixel centre is (x + 0.5) / w, so this truncates to the exact texel
 	int2 p = int2(vert_in.uv * tex_size);
 	return image.Load(int3(p, 0));
+}
+
+// ---- frame metric (design section 4) ---------------------------------------
+
+// level 1: one texel per 16 x 16 block, 4 x 4 samples at offsets 2, 6, 10, 14
+float4 PSMetricBlocks(VertInOut vert_in) : TARGET
+{
+	int2 b = int2(vert_in.uv * out_size);
+	int2 lim = int2(tex_size);
+	float sum = 0.0;
+	float n = 0.0;
+	for (int j = 0; j < 4; j++) {
+		for (int i = 0; i < 4; i++) {
+			int2 p = b * 16 + int2(2 + 4 * i, 2 + 4 * j);
+			if (p.x < lim.x && p.y < lim.y) {
+				float yc = luma(image.Load(int3(p, 0)).rgb) * nits_per_unit;
+				float yh = luma(hist_tex.Load(int3(p, 0)).rgb) * nits_per_unit;
+				sum = sum + abs(comp(yh) - comp(yc));
+				n = n + 1.0;
+			}
+		}
+	}
+	return float4(sum / max(n, 1.0), 0.0, 0.0, 1.0);
+}
+
+// level 2: mean of 16 x 16 blocks of level 1
+float4 PSMetricReduce(VertInOut vert_in) : TARGET
+{
+	int2 b = int2(vert_in.uv * out_size);
+	int2 lim = int2(in_size);
+	float sum = 0.0;
+	float n = 0.0;
+	for (int j = 0; j < 16; j++) {
+		for (int i = 0; i < 16; i++) {
+			int2 p = b * 16 + int2(i, j);
+			if (p.x < lim.x && p.y < lim.y) {
+				sum = sum + image.Load(int3(p, 0)).r;
+				n = n + 1.0;
+			}
+		}
+	}
+	return float4(sum / max(n, 1.0), 0.0, 0.0, 1.0);
+}
+
+// level 3 (1 x 1): mean of level 2 (up to 32 x 32, i.e. frames up to 8192 px) and
+// the static-noise floor: f_next = valid ? min(m, f * 1.005 + 0.0001) : m
+float4 PSMetricFinal(VertInOut vert_in) : TARGET
+{
+	if (reset > 0.5)
+		return float4(0.0, 0.0, 0.0, 1.0);
+	int2 lim = int2(in_size);
+	float sum = 0.0;
+	float n = 0.0;
+	for (int j = 0; j < 32; j++) {
+		for (int i = 0; i < 32; i++) {
+			if (i < lim.x && j < lim.y) {
+				sum = sum + image.Load(int3(i, j, 0)).r;
+				n = n + 1.0;
+			}
+		}
+	}
+	float m = sum / max(n, 1.0);
+	float4 prev = prev_metric_tex.Load(int3(0, 0, 0));
+	float fl = prev.b > 0.5 ? min(m, prev.g * 1.005 + 0.0001) : m;
+	return float4(m, fl, 1.0, 1.0);
+}
+
+// ---- temporal recurrence (design section 3) ---------------------------------
+
+float global_factor(float m, float fl)
+{
+	if (reset > 0.5)
+		return 0.0;
+	if (cut_enabled > 0.5 && m >= m_cut)
+		return 0.0;
+	float prot = smoothstep(0.0, 0.02, m - 1.5 * fl);
+	return 1.0 - protect_amount * prot;
+}
+
+float4 PSTemporal(VertInOut vert_in) : TARGET
+{
+	int2 p = int2(vert_in.uv * tex_size);
+	float4 cur = image.Load(int3(p, 0));
+	float4 hist = hist_tex.Load(int3(p, 0));
+	float4 mt = metric_tex.Load(int3(0, 0, 0));
+	float g = global_factor(mt.r, mt.g);
+
+	float3 c = cur.rgb * nits_per_unit;
+	float3 h = hist.rgb * nits_per_unit;
+	float yc = luma(c);
+	float yh = luma(h);
+	float3 cc = c - float3(yc, yc, yc);
+	float3 ch = h - float3(yh, yh, yh);
+	float dl = abs(comp(yh) - comp(yc));
+	float3 dv = ch - cc;
+	float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yh) + abs(yc)) + knee) * 1.442695041;
+	float wl = t_luma > 0.0 ? 0.9 * response(dl / t_luma) * g : 0.0;
+	float wc = t_chroma > 0.0 ? 0.9 * response(dc / t_chroma) * g : 0.0;
+	if (wl == 0.0 && wc == 0.0)
+		return cur; // exact identity
+	float yo = yc + wl * (yh - yc);
+	float3 o = float3(yo, yo, yo) + cc + wc * (ch - cc);
+	return float4(o * units_per_nit, cur.a);
+}
+
+// ---- output into the program frame (Mix and debug views) -------------------
+
+float4 PSOutput(VertInOut vert_in) : TARGET
+{
+	int2 p = int2(vert_in.uv * tex_size);
+	float4 cur = image.Load(int3(p, 0));
+	float4 filt = filt_tex.Load(int3(p, 0));
+
+	if (debug_mode > 2.5) {
+		// scene-change metric bar along the top: green = normal, amber = protecting,
+		// red = cut; white tick = cut threshold, cyan tick = static-noise floor
+		float4 mt = metric_tex.Load(int3(0, 0, 0));
+		float2 uv = vert_in.uv;
+		if (uv.y < 0.03) {
+			float full = 1.25 * m_cut;
+			float x = uv.x * full;
+			float g = global_factor(mt.r, mt.g);
+			float3 col = g <= 0.0 ? float3(1.0, 0.1, 0.1) : (g < 0.99 ? float3(1.0, 0.7, 0.0) : float3(0.1, 0.9, 0.2));
+			float3 bg = float3(0.05, 0.05, 0.05);
+			float3 o = x < mt.r ? col : bg;
+			float px = full / out_size.x;
+			if (abs(x - m_cut) < 2.0 * px)
+				o = float3(1.0, 1.0, 1.0);
+			if (abs(x - mt.g) < 2.0 * px)
+				o = float3(0.0, 0.9, 1.0);
+			return float4(o, 1.0);
+		}
+		return filt;
+	}
+	if (debug_mode > 1.5) {
+		// what the history differs by (luma, log2 units x gain; 1.0 = SDR white)
+		float4 hist = hist_tex.Load(int3(p, 0));
+		float d = abs(comp(luma(hist.rgb) * nits_per_unit) - comp(luma(cur.rgb) * nits_per_unit)) * debug_gain;
+		return float4(d, d, d, 1.0);
+	}
+	if (debug_mode > 0.5) {
+		// what the filter removed: |output - input| x gain
+		return float4(abs(filt.rgb - cur.rgb) * debug_gain, 1.0);
+	}
+	if (mix_amount >= 1.0)
+		return filt;
+	if (mix_amount <= 0.0)
+		return cur;
+	return float4(cur.rgb + mix_amount * (filt.rgb - cur.rgb), cur.a);
 }
 
 technique Identity
@@ -37,5 +228,50 @@ technique Identity
 	{
 		vertex_shader = VSDefault(vert_in);
 		pixel_shader  = PSIdentity(vert_in);
+	}
+}
+
+technique MetricBlocks
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSMetricBlocks(vert_in);
+	}
+}
+
+technique MetricReduce
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSMetricReduce(vert_in);
+	}
+}
+
+technique MetricFinal
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSMetricFinal(vert_in);
+	}
+}
+
+technique Temporal
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSTemporal(vert_in);
+	}
+}
+
+technique Output
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSOutput(vert_in);
 	}
 }

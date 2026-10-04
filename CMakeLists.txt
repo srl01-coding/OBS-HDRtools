@@ -50,6 +50,8 @@ target_sources(
     src/color/color-math.cpp
     src/color/color-math.hpp
     src/color/color-filter.cpp
+    src/denoise/hqdn3d-math.cpp
+    src/denoise/hqdn3d-math.hpp
     src/denoise/program-denoise.cpp
 )
 

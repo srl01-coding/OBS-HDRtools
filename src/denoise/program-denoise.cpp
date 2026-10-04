@@ -17,77 +17,113 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 /*
- * HDR Program Denoise - P0 (denoise brief v1.2, sections 3, 4, 26).
+ * HDR Program Denoise (denoise brief v1.2).
  *
- * Processes the finished program frame (after scene switching and transitions)
- * exactly once per frame, before stream / record / Program monitor see it.
+ * P0 - the hook (docs/denoise/DENOISE.md). After each video mix has drawn its
+ * texture, OBS (32.2.2 libobs/obs-video.c, render_main_texture) calls the
+ * main-rendered callbacks with that mix's texture still bound as the render
+ * target. That is once per *mix*, so the hook acts only when the bound target is
+ * the main canvas texture and the video frame time is new. Previews, projectors
+ * and multiview draw the main texture without calling the callback.
  *
- * Mechanism (OBS 32.2.2 libobs/obs-video.c, render_main_texture): after each
- * video mix has drawn its texture, OBS calls the main-rendered callbacks with
- * that mix's texture still bound as the render target. The callback runs once
- * per *mix*, not once per frame, so it acts only when
- *   - the bound render target is the main canvas texture (obs_get_main_texture),
- *     which skips secondary mixes, including ones that reused the main texture;
- *   - the video frame time differs from the last processed frame.
- * Previews, projectors and multiview draw the main texture but do not call the
- * callback, so they cannot advance any history.
+ * P1 - HQDN3D-style temporal (docs/HQDN3D_DESIGN.md; independent implementation,
+ * no FFmpeg/MPlayer code). Per unique frame, all on the GPU, no readback in the
+ * processing path:
+ *   copy main -> cur
+ *   metric: MetricBlocks(cur, hist) -> l1, MetricReduce -> l2, MetricFinal -> metric (1x1)
+ *   Temporal(cur, hist, metric) -> hist_next          (history update)
+ *   Output(cur, hist_next) -> main texture            (Mix, debug views)
+ * Textures keep the main texture's size and format (RGBA16F, native canvas space).
  *
- * Processing: copy the main texture to a scratch texture of the same size and
- * format, then draw the result back into the main texture (blend off,
- * framebuffer sRGB off). The texture stays in OBS's native canvas space
- * (RGBA16F / GS_CS_709_EXTENDED on an HDR canvas): no decode, no encode, no clamp.
+ * Telemetry (only while counter logging is on): GPU timer queries and a 1x1 staged
+ * copy of the metric, read 2-3 frames later, for timing and cut counts.
  *
- * P0 algorithms: Off, Identity (exact shader copy). HQDN3D / NLMeans come later.
- *
- * Controls: a private controller source, opened from Tools > HDR Program Denoise.
- * Settings persist in the plugin's config folder (program-denoise.json).
+ * Controls: Tools > HDR Program Denoise (private controller source); settings in
+ * the plugin config folder (program-denoise.json), development schema.
  */
+
+#include "hqdn3d-math.hpp"
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
 #include <util/platform.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace {
+
+using hdrtk::denoise::Params;
 
 constexpr const char *kSourceId = "hdr_toolkit_program_denoise_v1";
 constexpr const char *kConfigFile = "program-denoise.json";
 constexpr int kSchemaVersion = 1; // development schema (brief 2.7): no migrations yet
 constexpr uint64_t kLogIntervalNs = 10ull * 1000000000ull;
+constexpr int kTelemetryRing = 4;
 
-enum Algorithm { AlgoOff = 0, AlgoIdentity = 1 };
+enum Algorithm { AlgoOff = 0, AlgoIdentity = 1, AlgoHqdn3dTemporal = 2 };
+enum DebugView { ViewNormal = 0, ViewDifference = 1, ViewHistory = 2, ViewMetric = 3 };
 
 struct Counters {
 	std::atomic<uint64_t> callbacks{0};          // every main-rendered callback (all mixes)
 	std::atomic<uint64_t> other_mix_skipped{0};  // render target was not the main texture
-	std::atomic<uint64_t> unique_frames{0};      // program_frames_seen: distinct main-mix frames
-	std::atomic<uint64_t> duplicates_skipped{0}; // same frame time seen again on the main texture
+	std::atomic<uint64_t> unique_frames{0};      // distinct main-mix frames (program_frames_seen)
+	std::atomic<uint64_t> duplicates_skipped{0}; // same frame time again on the main texture
 	std::atomic<uint64_t> dispatches{0};         // processing passes drawn into the main texture
-	std::atomic<uint64_t> history_updates{0};    // temporal history writes (none in P0)
-	std::atomic<uint64_t> history_resets{0};     // temporal history (re)initialisations
-	std::atomic<uint64_t> failures{0};           // pass skipped because resources were missing
+	std::atomic<uint64_t> history_updates{0};    // temporal history writes
+	std::atomic<uint64_t> history_resets{0};     // history (re)initialised: start, resize, mode, manual
+	std::atomic<uint64_t> cut_resets{0};         // cuts detected on the GPU (telemetry only)
+	std::atomic<uint64_t> failures{0};           // frames passed through for lack of resources
+};
+
+struct Settings {
+	int algorithm = AlgoOff;
+	Params p;
+	double mix = 1.0;
+	int debug_view = ViewNormal;
+	double debug_gain = 16.0;
+	bool log_counters = false;
+};
+
+struct Telemetry {
+	gs_timer_range_t *range[kTelemetryRing] = {};
+	gs_timer_t *timer[kTelemetryRing] = {};
+	gs_stagesurf_t *stage[kTelemetryRing] = {};
+	bool pending[kTelemetryRing] = {};
+	int idx = 0;
+	std::vector<double> ms;
+	double m_sum = 0, m_max = 0;
+	int m_n = 0;
 };
 
 struct Denoise {
 	obs_source_t *controller = nullptr;
 
-	std::atomic<int> algorithm{AlgoOff};
-	std::atomic<bool> periodic_log{false};
+	std::mutex mutex; // guards settings
+	Settings settings;
 	std::atomic<bool> log_now{false};
 	std::atomic<bool> reset_counters{false};
+	std::atomic<bool> reset_history{false};
 
 	Counters c;
 
 	// graphics thread only
 	gs_effect_t *effect = nullptr;
 	bool effect_failed = false;
-	gs_texture_t *scratch = nullptr;
+	gs_texture_t *cur = nullptr;
+	gs_texture_t *hist[2] = {nullptr, nullptr};
+	gs_texture_t *l1 = nullptr, *l2 = nullptr;
+	gs_texture_t *metric[2] = {nullptr, nullptr};
+	int hi = 0, mi = 0;
+	bool history_valid = false;
+	int last_algo = AlgoOff;
 	uint32_t width = 0, height = 0;
 	enum gs_color_format format = GS_UNKNOWN;
 	bool have_frame_time = false;
@@ -96,6 +132,7 @@ struct Denoise {
 	uint32_t total_frames_at_reset = 0;
 	uint32_t lagged_frames_at_reset = 0;
 	bool warned = false;
+	Telemetry tel;
 };
 
 Denoise *g = nullptr;
@@ -138,24 +175,111 @@ const char *colorspace_name(enum video_colorspace cs)
 	}
 }
 
+const char *algo_name(int a)
+{
+	return a == AlgoIdentity ? "identity" : a == AlgoHqdn3dTemporal ? "hqdn3d-temporal" : "off";
+}
+
+double nits_per_unit(enum gs_color_space space)
+{
+	return space == GS_CS_709_SCRGB ? 80.0 : (double)obs_get_video_sdr_white_level();
+}
+
+// ---- telemetry ---------------------------------------------------------------
+
+void telemetry_free(Telemetry &t)
+{
+	for (int i = 0; i < kTelemetryRing; i++) {
+		gs_timer_range_destroy(t.range[i]);
+		gs_timer_destroy(t.timer[i]);
+		gs_stagesurface_destroy(t.stage[i]);
+		t.range[i] = nullptr;
+		t.timer[i] = nullptr;
+		t.stage[i] = nullptr;
+		t.pending[i] = false;
+	}
+}
+
+void telemetry_collect(Denoise *d, double m_cut, bool cut_enabled)
+{
+	Telemetry &t = d->tel;
+	// the oldest slot (written kTelemetryRing - 1 frames ago)
+	const int i = (t.idx + 1) % kTelemetryRing;
+	if (!t.pending[i])
+		return;
+	t.pending[i] = false;
+	uint64_t ticks = 0, freq = 0;
+	bool disjoint = true;
+	if (t.range[i] && t.timer[i] && gs_timer_range_get_data(t.range[i], &disjoint, &freq) && !disjoint && freq &&
+	    gs_timer_get_data(t.timer[i], &ticks)) {
+		t.ms.push_back((double)ticks * 1000.0 / (double)freq);
+		if (t.ms.size() > 3000)
+			t.ms.erase(t.ms.begin(), t.ms.begin() + 1000);
+	}
+	uint8_t *data = nullptr;
+	uint32_t linesize = 0;
+	if (t.stage[i] && gs_stagesurface_map(t.stage[i], &data, &linesize)) {
+		float v[4];
+		memcpy(v, data, sizeof(v));
+		gs_stagesurface_unmap(t.stage[i]);
+		if (v[2] > 0.5f) { // metric valid (not a reset frame)
+			t.m_sum += v[0];
+			t.m_max = std::max(t.m_max, (double)v[0]);
+			t.m_n++;
+			if (cut_enabled && v[0] >= m_cut)
+				d->c.cut_resets++;
+		}
+	}
+}
+
+std::string timing_summary(Telemetry &t)
+{
+	if (t.ms.empty())
+		return "gpu time n/a";
+	std::vector<double> v = t.ms;
+	std::sort(v.begin(), v.end());
+	double sum = 0;
+	for (double x : v)
+		sum += x;
+	const double p95 = v[std::min(v.size() - 1, (size_t)(0.95 * (double)v.size()))];
+	char buf[160];
+	snprintf(buf, sizeof(buf), "gpu ms avg %.2f p95 %.2f max %.2f (n=%zu)", sum / (double)v.size(), p95, v.back(),
+		 v.size());
+	t.ms.clear();
+	return buf;
+}
+
 void log_counters(Denoise *d, const char *why)
 {
 	const uint32_t total = obs_get_total_frames() - d->total_frames_at_reset;
 	const uint32_t lagged = obs_get_lagged_frames() - d->lagged_frames_at_reset;
 	const uint64_t unique = d->c.unique_frames.load();
 	const uint64_t disp = d->c.dispatches.load();
-	const int algo = d->algorithm.load();
+	int algo;
+	{
+		std::lock_guard<std::mutex> lock(d->mutex);
+		algo = d->settings.algorithm;
+	}
+	const std::string timing = timing_summary(d->tel);
+	char metric[96] = "metric n/a";
+	if (d->tel.m_n > 0)
+		snprintf(metric, sizeof(metric), "metric avg %.4f max %.4f", d->tel.m_sum / d->tel.m_n, d->tel.m_max);
+	d->tel.m_sum = d->tel.m_max = 0;
+	d->tel.m_n = 0;
+
+	const char *verdict = "off (no dispatch expected)";
+	if (algo != AlgoOff)
+		verdict = disp == unique ? "dispatches == unique frames: OK" : "MISMATCH dispatches != unique frames";
+	if (algo == AlgoHqdn3dTemporal && d->c.history_updates.load() != disp)
+		verdict = "MISMATCH history_updates != dispatches";
 	obs_log(LOG_INFO,
 		"[denoise] %s: algorithm=%s callbacks=%" PRIu64 " other_mix_skipped=%" PRIu64
 		" unique_program_frames=%" PRIu64 " duplicate_callbacks_skipped=%" PRIu64 " denoise_dispatches=%" PRIu64
-		" history_updates=%" PRIu64 " history_resets=%" PRIu64 " failures=%" PRIu64
-		" | obs_total_frames=%u obs_lagged_frames=%u | %s",
-		why, algo == AlgoIdentity ? "identity" : "off", d->c.callbacks.load(), d->c.other_mix_skipped.load(),
-		unique, d->c.duplicates_skipped.load(), disp, d->c.history_updates.load(), d->c.history_resets.load(),
-		d->c.failures.load(), total, lagged,
-		algo == AlgoOff ? "off (no dispatch expected)"
-				: (disp == unique ? "dispatches == unique frames: OK"
-						  : "MISMATCH dispatches != unique frames"));
+		" history_updates=%" PRIu64 " history_resets=%" PRIu64 " cut_resets=%" PRIu64 " failures=%" PRIu64
+		" | obs_total_frames=%u obs_lagged_frames=%u | %s | %s | %s",
+		why, algo_name(algo), d->c.callbacks.load(), d->c.other_mix_skipped.load(), unique,
+		d->c.duplicates_skipped.load(), disp, d->c.history_updates.load(), d->c.history_resets.load(),
+		d->c.cut_resets.load(), d->c.failures.load(), total, lagged, timing.c_str(), metric, verdict);
 }
 
 void reset_counters_now(Denoise *d)
@@ -167,10 +291,14 @@ void reset_counters_now(Denoise *d)
 	d->c.dispatches = 0;
 	d->c.history_updates = 0;
 	d->c.history_resets = 0;
+	d->c.cut_resets = 0;
 	d->c.failures = 0;
 	d->total_frames_at_reset = obs_get_total_frames();
 	d->lagged_frames_at_reset = obs_get_lagged_frames();
+	d->tel.ms.clear();
 }
+
+// ---- resources ---------------------------------------------------------------
 
 bool ensure_effect(Denoise *d)
 {
@@ -191,59 +319,228 @@ bool ensure_effect(Denoise *d)
 	return d->effect != nullptr;
 }
 
-// (Re)create the scratch texture when the program frame's size or format changes.
-bool ensure_scratch(Denoise *d, gs_texture_t *main_tex)
+void free_temporal(Denoise *d)
+{
+	for (gs_texture_t **t : {&d->hist[0], &d->hist[1], &d->l1, &d->l2, &d->metric[0], &d->metric[1]}) {
+		gs_texture_destroy(*t);
+		*t = nullptr;
+	}
+	d->history_valid = false;
+}
+
+// cur: same size/format as the program frame. Recreated on any change.
+bool ensure_cur(Denoise *d, gs_texture_t *main_tex)
 {
 	const uint32_t w = gs_texture_get_width(main_tex);
 	const uint32_t h = gs_texture_get_height(main_tex);
 	const enum gs_color_format f = gs_texture_get_color_format(main_tex);
-	if (d->scratch && w == d->width && h == d->height && f == d->format)
+	if (d->cur && w == d->width && h == d->height && f == d->format)
 		return true;
 
-	gs_texture_destroy(d->scratch);
-	d->scratch = gs_texture_create(w, h, f, 1, nullptr, 0);
+	gs_texture_destroy(d->cur);
+	free_temporal(d); // never reuse old-size history (brief 18)
+	d->cur = gs_texture_create(w, h, f, 1, nullptr, GS_RENDER_TARGET);
 	d->width = w;
 	d->height = h;
 	d->format = f;
-	d->c.history_resets++; // brief 8: any resource change resets temporal history
 
 	struct obs_video_info ovi = {};
 	obs_get_video_info(&ovi);
 	obs_log(LOG_INFO,
 		"[denoise] program frame %ux%u %s, canvas colour space %s, SDR white %.0f nits, HDR nominal peak %.0f nits%s",
 		w, h, format_name(f), colorspace_name(ovi.colorspace), obs_get_video_sdr_white_level(),
-		obs_get_video_hdr_nominal_peak_level(), d->scratch ? "" : " - FAILED to create scratch texture");
-	return d->scratch != nullptr;
+		obs_get_video_hdr_nominal_peak_level(), d->cur ? "" : " - FAILED to create a texture");
+	return d->cur != nullptr;
 }
 
-void draw_identity(Denoise *d, gs_texture_t *main_tex)
+bool ensure_temporal(Denoise *d)
 {
-	gs_copy_texture(d->scratch, main_tex);
-
-	const bool prev_srgb = gs_framebuffer_srgb_enabled();
-	gs_enable_framebuffer_srgb(false);
-	gs_blend_state_push();
-	gs_enable_blending(false);
-	gs_viewport_push();
-	gs_projection_push();
-	gs_matrix_push();
-	gs_matrix_identity();
-	gs_set_viewport(0, 0, (int)d->width, (int)d->height);
-	gs_ortho(0.0f, (float)d->width, 0.0f, (float)d->height, -100.0f, 100.0f);
-
-	struct vec2 size;
-	vec2_set(&size, (float)d->width, (float)d->height);
-	gs_effect_set_texture(gs_effect_get_param_by_name(d->effect, "image"), d->scratch);
-	gs_effect_set_vec2(gs_effect_get_param_by_name(d->effect, "tex_size"), &size);
-	while (gs_effect_loop(d->effect, "Identity"))
-		gs_draw_sprite(d->scratch, 0, d->width, d->height);
-
-	gs_matrix_pop();
-	gs_projection_pop();
-	gs_viewport_pop();
-	gs_blend_state_pop();
-	gs_enable_framebuffer_srgb(prev_srgb);
+	if (d->hist[0] && d->hist[1] && d->l1 && d->l2 && d->metric[0] && d->metric[1])
+		return true;
+	free_temporal(d);
+	const uint32_t w1 = (d->width + 15) / 16, h1 = (d->height + 15) / 16;
+	const uint32_t w2 = (w1 + 15) / 16, h2 = (h1 + 15) / 16;
+	for (int i = 0; i < 2; i++) {
+		d->hist[i] = gs_texture_create(d->width, d->height, d->format, 1, nullptr, GS_RENDER_TARGET);
+		d->metric[i] = gs_texture_create(1, 1, GS_RGBA32F, 1, nullptr, GS_RENDER_TARGET);
+	}
+	d->l1 = gs_texture_create(w1, h1, GS_R32F, 1, nullptr, GS_RENDER_TARGET);
+	d->l2 = gs_texture_create(w2, h2, GS_R32F, 1, nullptr, GS_RENDER_TARGET);
+	const bool ok = d->hist[0] && d->hist[1] && d->l1 && d->l2 && d->metric[0] && d->metric[1];
+	const double mib = (double)d->width * d->height * 8.0 * 3.0 / (1024.0 * 1024.0);
+	obs_log(LOG_INFO, "[denoise] temporal resources %s: history 2 x %ux%u %s + current frame copy, about %.0f MiB",
+		ok ? "created" : "FAILED", d->width, d->height, format_name(d->format), mib);
+	if (!ok)
+		free_temporal(d);
+	return ok;
 }
+
+// ---- drawing -------------------------------------------------------------------
+
+void set_tex(gs_effect_t *e, const char *name, gs_texture_t *t)
+{
+	gs_effect_set_texture(gs_effect_get_param_by_name(e, name), t);
+}
+
+void set_f(gs_effect_t *e, const char *name, float v)
+{
+	gs_effect_set_float(gs_effect_get_param_by_name(e, name), v);
+}
+
+void set_v2(gs_effect_t *e, const char *name, float x, float y)
+{
+	struct vec2 v;
+	vec2_set(&v, x, y);
+	gs_effect_set_vec2(gs_effect_get_param_by_name(e, name), &v);
+}
+
+// Parameters shared by every technique. gs_technique_end() resets all effect
+// parameters, so this runs before each technique.
+struct Frame {
+	const Settings *s;
+	hdrtk::denoise::ShaderParams sp;
+	float npu;
+	bool reset;
+};
+
+void set_common(Denoise *d, const Frame &f)
+{
+	gs_effect_t *e = d->effect;
+	set_v2(e, "tex_size", (float)d->width, (float)d->height);
+	set_f(e, "nits_per_unit", f.npu);
+	set_f(e, "units_per_nit", 1.0f / f.npu);
+	set_f(e, "knee", f.sp.k);
+	set_f(e, "t_luma", f.sp.t_luma);
+	set_f(e, "t_chroma", f.sp.t_chroma);
+	set_f(e, "m_cut", f.sp.m_cut);
+	set_f(e, "protect_amount", f.sp.protect_amount);
+	set_f(e, "cut_enabled", f.sp.cut_enabled);
+	set_f(e, "reset", f.reset ? 1.0f : 0.0f);
+	set_f(e, "mix_amount", (float)f.s->mix);
+	set_f(e, "debug_mode", (float)f.s->debug_view);
+	set_f(e, "debug_gain", (float)f.s->debug_gain);
+}
+
+// Draw a full-target quad with `tech` into `target` (size w x h).
+void run_pass(Denoise *d, gs_texture_t *target, enum gs_color_space space, const char *tech)
+{
+	const uint32_t w = gs_texture_get_width(target), h = gs_texture_get_height(target);
+	gs_set_render_target_with_color_space(target, nullptr, space);
+	gs_set_viewport(0, 0, (int)w, (int)h);
+	gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+	set_v2(d->effect, "out_size", (float)w, (float)h);
+	while (gs_effect_loop(d->effect, tech))
+		gs_draw_sprite(nullptr, 0, w, h);
+}
+
+struct StateGuard {
+	bool prev_srgb;
+	StateGuard()
+	{
+		prev_srgb = gs_framebuffer_srgb_enabled();
+		gs_enable_framebuffer_srgb(false);
+		gs_blend_state_push();
+		gs_enable_blending(false);
+		gs_viewport_push();
+		gs_projection_push();
+		gs_matrix_push();
+		gs_matrix_identity();
+	}
+	~StateGuard()
+	{
+		gs_matrix_pop();
+		gs_projection_pop();
+		gs_viewport_pop();
+		gs_blend_state_pop();
+		gs_enable_framebuffer_srgb(prev_srgb);
+	}
+};
+
+void draw_identity(Denoise *d, gs_texture_t *main_tex, const Frame &f)
+{
+	const enum gs_color_space space = gs_get_color_space();
+	gs_copy_texture(d->cur, main_tex);
+	StateGuard guard;
+	set_common(d, f);
+	set_tex(d->effect, "image", d->cur);
+	run_pass(d, main_tex, space, "Identity");
+}
+
+void draw_temporal(Denoise *d, gs_texture_t *main_tex, const Frame &f, bool telemetry)
+{
+	const enum gs_color_space space = gs_get_color_space();
+	gs_effect_t *e = d->effect;
+	Telemetry &t = d->tel;
+	const int slot = t.idx;
+	if (telemetry) {
+		if (!t.range[slot])
+			t.range[slot] = gs_timer_range_create();
+		if (!t.timer[slot])
+			t.timer[slot] = gs_timer_create();
+		if (!t.stage[slot])
+			t.stage[slot] = gs_stagesurface_create(1, 1, GS_RGBA32F);
+		if (t.range[slot])
+			gs_timer_range_begin(t.range[slot]);
+		if (t.timer[slot])
+			gs_timer_begin(t.timer[slot]);
+	}
+
+	gs_copy_texture(d->cur, main_tex);
+	{
+		StateGuard guard;
+		gs_texture_t *hist = d->hist[d->hi];
+		gs_texture_t *hist_next = d->hist[d->hi ^ 1];
+		gs_texture_t *m_prev = d->metric[d->mi];
+		gs_texture_t *m_next = d->metric[d->mi ^ 1];
+
+		if (!f.reset) {
+			set_common(d, f);
+			set_tex(e, "image", d->cur);
+			set_tex(e, "hist_tex", hist);
+			run_pass(d, d->l1, space, "MetricBlocks");
+
+			set_common(d, f);
+			set_tex(e, "image", d->l1);
+			set_v2(e, "in_size", (float)gs_texture_get_width(d->l1), (float)gs_texture_get_height(d->l1));
+			run_pass(d, d->l2, space, "MetricReduce");
+		}
+		set_common(d, f);
+		set_tex(e, "image", d->l2);
+		set_tex(e, "prev_metric_tex", m_prev);
+		set_v2(e, "in_size", (float)gs_texture_get_width(d->l2), (float)gs_texture_get_height(d->l2));
+		run_pass(d, m_next, space, "MetricFinal");
+
+		set_common(d, f);
+		set_tex(e, "image", d->cur);
+		set_tex(e, "hist_tex", hist);
+		set_tex(e, "metric_tex", m_next);
+		run_pass(d, hist_next, space, "Temporal");
+
+		set_common(d, f);
+		set_tex(e, "image", d->cur);
+		set_tex(e, "filt_tex", hist_next);
+		set_tex(e, "hist_tex", hist);
+		set_tex(e, "metric_tex", m_next);
+		run_pass(d, main_tex, space, "Output"); // leaves the main texture bound, as OBS had it
+
+		if (telemetry && t.stage[slot]) {
+			gs_stage_texture(t.stage[slot], m_next);
+			t.pending[slot] = true;
+		}
+		d->hi ^= 1;
+		d->mi ^= 1;
+	}
+	if (telemetry) {
+		if (t.timer[slot])
+			gs_timer_end(t.timer[slot]);
+		if (t.range[slot])
+			gs_timer_range_end(t.range[slot]);
+		t.pending[slot] = true;
+		t.idx = (t.idx + 1) % kTelemetryRing;
+	}
+}
+
+// ---- the hook ----------------------------------------------------------------
 
 void on_main_rendered(void *param)
 {
@@ -269,10 +566,47 @@ void on_main_rendered(void *param)
 	d->last_frame_time = t;
 	d->c.unique_frames++;
 
-	const int algo = d->algorithm.load();
-	if (algo == AlgoIdentity) {
-		if (ensure_effect(d) && ensure_scratch(d, main_tex)) {
-			draw_identity(d, main_tex);
+	Settings s;
+	{
+		std::lock_guard<std::mutex> lock(d->mutex);
+		s = d->settings;
+	}
+	if (s.algorithm != d->last_algo) {
+		if (s.algorithm == AlgoHqdn3dTemporal)
+			d->history_valid = false; // entering a temporal mode: start from the current frame
+		if (d->last_algo == AlgoHqdn3dTemporal) {
+			free_temporal(d); // release ~2 frames of VRAM when temporal is not in use
+			telemetry_free(d->tel);
+		}
+		d->last_algo = s.algorithm;
+	}
+	if (d->reset_history.exchange(false))
+		d->history_valid = false;
+
+	if (s.algorithm != AlgoOff) {
+		Frame f;
+		f.s = &s;
+		f.sp = hdrtk::denoise::make_shader_params(s.p);
+		f.npu = (float)nits_per_unit(gs_get_color_space());
+		f.reset = !d->history_valid;
+
+		bool ok = ensure_effect(d) && ensure_cur(d, main_tex);
+		if (ok && s.algorithm == AlgoHqdn3dTemporal) {
+			ok = ensure_temporal(d);
+			f.reset = !d->history_valid; // ensure_* may have dropped the history
+		}
+		if (ok) {
+			if (s.algorithm == AlgoIdentity) {
+				draw_identity(d, main_tex, f);
+			} else {
+				if (s.log_counters)
+					telemetry_collect(d, f.sp.m_cut, f.sp.cut_enabled > 0.5f);
+				draw_temporal(d, main_tex, f, s.log_counters);
+				d->c.history_updates++;
+				if (f.reset)
+					d->c.history_resets++;
+				d->history_valid = true;
+			}
 			d->c.dispatches++;
 		} else {
 			d->c.failures++; // brief 18: pass the frame through untouched, warn once
@@ -286,7 +620,7 @@ void on_main_rendered(void *param)
 	const uint64_t now = os_gettime_ns();
 	if (d->log_now.exchange(false)) {
 		log_counters(d, "on request");
-	} else if (d->periodic_log.load() && now - d->last_log_ns >= kLogIntervalNs) {
+	} else if (s.log_counters && now - d->last_log_ns >= kLogIntervalNs) {
 		log_counters(d, "periodic");
 		d->last_log_ns = now;
 	}
@@ -313,18 +647,38 @@ void save_settings(obs_data_t *settings)
 	}
 }
 
-void ctl_update(void *, obs_data_t *settings)
+void ctl_update(void *, obs_data_t *data)
 {
 	if (!g)
 		return;
-	int algo = (int)obs_data_get_int(settings, "algorithm");
-	if (algo != AlgoOff && algo != AlgoIdentity)
-		algo = AlgoOff; // unknown future value: fail safe
-	const int prev = g->algorithm.exchange(algo);
-	g->periodic_log = obs_data_get_bool(settings, "log_counters");
-	if (prev != algo)
-		obs_log(LOG_INFO, "[denoise] algorithm %s", algo == AlgoIdentity ? "identity" : "off");
-	save_settings(settings);
+	Settings s;
+	s.algorithm = (int)obs_data_get_int(data, "algorithm");
+	if (s.algorithm != AlgoOff && s.algorithm != AlgoIdentity && s.algorithm != AlgoHqdn3dTemporal)
+		s.algorithm = AlgoOff; // unknown future value: fail safe
+	s.p.temporal_luma = obs_data_get_double(data, "temporal_luma");
+	s.p.temporal_chroma = obs_data_get_double(data, "temporal_chroma");
+	s.p.k_nits = obs_data_get_double(data, "comparison_knee_nits");
+	s.p.cut_reset = obs_data_get_bool(data, "scene_cut_reset");
+	s.p.cut_sensitivity = obs_data_get_double(data, "cut_sensitivity");
+	s.p.protection = obs_data_get_bool(data, "transition_protection");
+	s.p.protection_amount = obs_data_get_double(data, "protection_amount");
+	hdrtk::denoise::sanitize(s.p);
+	s.mix = std::clamp(obs_data_get_double(data, "mix"), 0.0, 1.0);
+	s.debug_view = (int)obs_data_get_int(data, "debug_view");
+	if (s.debug_view < ViewNormal || s.debug_view > ViewMetric)
+		s.debug_view = ViewNormal;
+	s.debug_gain = std::clamp(obs_data_get_double(data, "debug_gain"), 1.0, 256.0);
+	s.log_counters = obs_data_get_bool(data, "log_counters");
+
+	int prev;
+	{
+		std::lock_guard<std::mutex> lock(g->mutex);
+		prev = g->settings.algorithm;
+		g->settings = s;
+	}
+	if (prev != s.algorithm)
+		obs_log(LOG_INFO, "[denoise] algorithm %s", algo_name(s.algorithm));
+	save_settings(data);
 }
 
 void *ctl_create(obs_data_t *settings, obs_source_t *source)
@@ -341,6 +695,17 @@ void ctl_defaults(obs_data_t *s)
 {
 	obs_data_set_default_int(s, "schema_version", kSchemaVersion);
 	obs_data_set_default_int(s, "algorithm", AlgoOff); // new installs are neutral
+	obs_data_set_default_double(s, "mix", 1.0);
+	// HQDN3D-style starting values; tuning happens in OBS (brief 24), not copied from FFmpeg
+	obs_data_set_default_double(s, "temporal_luma", 4.0);
+	obs_data_set_default_double(s, "temporal_chroma", 6.0);
+	obs_data_set_default_double(s, "comparison_knee_nits", 0.1);
+	obs_data_set_default_bool(s, "scene_cut_reset", true);
+	obs_data_set_default_double(s, "cut_sensitivity", 50.0);
+	obs_data_set_default_bool(s, "transition_protection", true);
+	obs_data_set_default_double(s, "protection_amount", 0.8);
+	obs_data_set_default_int(s, "debug_view", ViewNormal);
+	obs_data_set_default_double(s, "debug_gain", 16.0);
 	obs_data_set_default_bool(s, "log_counters", false);
 }
 
@@ -358,6 +723,18 @@ bool reset_clicked(obs_properties_t *, obs_property_t *, void *)
 	return false;
 }
 
+bool reset_history_clicked(obs_properties_t *, obs_property_t *, void *)
+{
+	if (g)
+		g->reset_history = true;
+	return false;
+}
+
+obs_property_t *slider(obs_properties_t *props, const char *key, const char *text, double lo, double hi, double step)
+{
+	return obs_properties_add_float_slider(props, key, obs_module_text(text), lo, hi, step);
+}
+
 obs_properties_t *ctl_properties(void *)
 {
 	obs_properties_t *props = obs_properties_create();
@@ -365,9 +742,30 @@ obs_properties_t *ctl_properties(void *)
 	obs_property_t *p = obs_properties_add_list(props, "algorithm", obs_module_text("Denoise.Algorithm"),
 						    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Denoise.Algorithm.Off"), AlgoOff);
+	obs_property_list_add_int(p, obs_module_text("Denoise.Algorithm.Hqdn3dTemporal"), AlgoHqdn3dTemporal);
 	obs_property_list_add_int(p, obs_module_text("Denoise.Algorithm.Identity"), AlgoIdentity);
+	slider(props, "mix", "Denoise.Mix", 0.0, 1.0, 0.01);
+	obs_properties_add_button2(props, "reset_history", obs_module_text("Denoise.ResetHistory"),
+				   reset_history_clicked, nullptr);
+
+	obs_properties_t *hq = obs_properties_create();
+	slider(hq, "temporal_luma", "Denoise.TemporalLuma", 0.0, 20.0, 0.1);
+	slider(hq, "temporal_chroma", "Denoise.TemporalChroma", 0.0, 20.0, 0.1);
+	obs_properties_add_bool(hq, "scene_cut_reset", obs_module_text("Denoise.SceneCutReset"));
+	slider(hq, "cut_sensitivity", "Denoise.CutSensitivity", 0.0, 100.0, 1.0);
+	obs_properties_add_bool(hq, "transition_protection", obs_module_text("Denoise.TransitionProtection"));
+	slider(hq, "protection_amount", "Denoise.ProtectionAmount", 0.0, 1.0, 0.01);
+	slider(hq, "comparison_knee_nits", "Denoise.Knee", 0.01, 1.0, 0.01);
+	obs_properties_add_group(props, "hqdn3d", obs_module_text("Denoise.Hqdn3d"), OBS_GROUP_NORMAL, hq);
 
 	obs_properties_t *dbg = obs_properties_create();
+	p = obs_properties_add_list(dbg, "debug_view", obs_module_text("Denoise.DebugView"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Normal"), ViewNormal);
+	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Difference"), ViewDifference);
+	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.History"), ViewHistory);
+	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Metric"), ViewMetric);
+	slider(dbg, "debug_gain", "Denoise.DebugGain", 1.0, 64.0, 1.0);
 	obs_properties_add_bool(dbg, "log_counters", obs_module_text("Denoise.LogCounters"));
 	obs_properties_add_button2(dbg, "log_now", obs_module_text("Denoise.LogNow"), log_now_clicked, nullptr);
 	obs_properties_add_button2(dbg, "reset_counters", obs_module_text("Denoise.ResetCounters"), reset_clicked,
@@ -431,7 +829,9 @@ extern "C" void hdrtk_denoise_unload(void)
 	}
 	obs_enter_graphics();
 	gs_effect_destroy(g->effect);
-	gs_texture_destroy(g->scratch);
+	gs_texture_destroy(g->cur);
+	free_temporal(g);
+	telemetry_free(g->tel);
 	obs_leave_graphics();
 	delete g;
 	g = nullptr;
