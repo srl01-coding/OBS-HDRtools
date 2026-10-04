@@ -24,7 +24,7 @@ def hlg_pct(nits):
     return 100 * np.where(e <= 1 / 12, np.sqrt(3 * e), a * np.log(np.maximum(12 * e - b, 1e-12)) + c)
 
 
-fig, ax = plt.subplots(figsize=(11, 4.2), dpi=130)
+fig, ax = plt.subplots(figsize=(11, 4.6), dpi=130)
 for i, n in enumerate(names):
     ax.plot(d[:, 0], d[:, i + 1], color=colors[i], lw=2, label=n)
     ax.fill_between(d[:, 0], 0, d[:, i + 1], color=colors[i], alpha=0.08)
@@ -35,8 +35,28 @@ def hlg_label(nits):
     return ">109%" if nits > 1866 else f"{hlg_pct(nits):.0f}%"
 
 
-ax.set_xticklabels([f"{t:+d}\n{gray * 2.0 ** t:.3g}\n{hlg_label(gray * 2.0 ** t)}" for t in ticks], fontsize=8)
-ax.set_xlabel(f"stops from gray ({gray:g} nits)  /  nits  /  HLG % (1000-nit peak)", fontsize=9)
+def code_label(nits):
+    # 10-bit narrow range: 64 + 876 E'
+    return "1023" if nits > 1866 else f"{64 + 8.76 * hlg_pct(nits):.0f}"
+
+
+def nits_label(nits):
+    # plain decimals, no exponent notation
+    if nits >= 10:
+        return f"{nits:.0f}"
+    if nits >= 1:
+        return f"{nits:.1f}"
+    digits = 1
+    while nits * 10 ** digits < 10:
+        digits += 1
+    return f"{nits:.{digits}f}"
+
+
+ax.set_xticklabels(
+    [f"{t:+d}\n{nits_label(gray * 2.0 ** t)}\n{hlg_label(gray * 2.0 ** t)}\n{code_label(gray * 2.0 ** t)}" for t in ticks],
+    fontsize=8,
+)
+ax.set_xlabel(f"stops from gray ({gray:g} nits)  /  nits  /  HLG % (1000-nit peak)  /  10-bit code (narrow range)", fontsize=9)
 ax.set_ylabel("zone weight")
 ax.set_ylim(-0.02, 1.08)
 ax.set_xlim(d[0, 0], d[-1, 0])
