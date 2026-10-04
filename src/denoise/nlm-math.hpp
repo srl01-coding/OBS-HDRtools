@@ -50,8 +50,9 @@ struct NlmParams {
 	int policy = NlmPolicyA;
 	double lambda = 0.0; // weight of the chroma term in the patch distance
 	double cap = 0.9;    // maximum temporal share for the recursive policies (B, H)
-	double tgain = 1.0;  // temporal candidate weight multiplier (1..9); with the self weight
-		// fixed at 1, a single temporal match can otherwise never exceed a 50% share
+	// temporal candidate weight multiplier (1..9): with the self weight fixed at 1, a single
+	// temporal match could otherwise never exceed a 50% share
+	double tgain = 1.0;
 };
 
 constexpr double kNlmCutoff = 12.0; // D / h^2 above this -> weight 0

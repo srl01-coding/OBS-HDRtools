@@ -184,6 +184,42 @@ Rgba sample_bilinear(const Image &im, double x, double y)
 	return o;
 }
 
+double lanczos3(double x)
+{
+	x = std::fabs(x);
+	if (x < 1e-9)
+		return 1.0;
+	if (x >= 3.0)
+		return 0.0;
+	const double px_ = M_PI * x;
+	return 3.0 * std::sin(px_) * std::sin(px_ / 3.0) / (px_ * px_);
+}
+
+Rgba sample_lanczos3(const Image &im, double x, double y)
+{
+	const int ix = (int)std::floor(x), iy = (int)std::floor(y);
+	double wx[6], wy[6], sx = 0, sy = 0;
+	for (int i = 0; i < 6; i++) {
+		wx[i] = lanczos3(x - (ix - 2 + i));
+		wy[i] = lanczos3(y - (iy - 2 + i));
+		sx += wx[i];
+		sy += wy[i];
+	}
+	Rgba o{0, 0, 0, 0};
+	for (int j = 0; j < 6; j++) {
+		const int yy = std::clamp(iy - 2 + j, 0, im.h - 1);
+		for (int i = 0; i < 6; i++) {
+			const Rgba &p = im.at(std::clamp(ix - 2 + i, 0, im.w - 1), yy);
+			const double w = wx[i] * wy[j] / (sx * sy);
+			o.r += w * p.r;
+			o.g += w * p.g;
+			o.b += w * p.b;
+			o.a += w * p.a;
+		}
+	}
+	return o;
+}
+
 // ---- fixtures ----------------------------------------------------------------------
 
 enum FixtureKind { FixStatic, FixPan, FixObject, FixCut };
@@ -438,15 +474,22 @@ struct NlmMethod : Method {
 
 // Motion-compensated HQDN3D-style temporal: warp D(t-1) with (oracle) flow, then the P1
 // recurrence against the warped history. Flow models: exact, 4x4 grid, 4x4 grid + error.
+enum Interp { InterpBilinear, InterpCubic, InterpLanczos3 };
+
 struct McMethod : Method {
 	int grid;        // 1 = per pixel, 4 = 4x4 blocks
 	double flow_err; // px, Gaussian per block
-	bool cubic_warp;
+	int interp;
+	bool zero_fallback = false; // also try the unwarped history; keep the better 3x3 match
 	Image hist;
 	bool valid = false;
 	Gate gate;
 	uint64_t frame_no = 0;
-	McMethod(const std::string &n, int g, double err, bool cub) : grid(g), flow_err(err), cubic_warp(cub)
+	McMethod(const std::string &n, int g, double err, int ip, bool zf = false)
+		: grid(g),
+		  flow_err(err),
+		  interp(ip),
+		  zero_fallback(zf)
 	{
 		name = n;
 	}
@@ -480,9 +523,40 @@ struct McMethod : Method {
 					const double sx = x + fx, sy = y + fy;
 					if (sx < 0 || sy < 0 || sx > n.w - 1 || sy > n.h - 1)
 						continue; // no history: warped = current -> identity there
-					px(warped, x, y) = cubic_warp ? sample_cubic(hist, sx, sy)
-								      : sample_bilinear(hist, sx, sy);
+					px(warped, x, y) = interp == InterpCubic      ? sample_cubic(hist, sx, sy)
+							   : interp == InterpLanczos3 ? sample_lanczos3(hist, sx, sy)
+										      : sample_bilinear(hist, sx, sy);
 				}
+			if (zero_fallback) {
+				// per pixel: keep whichever history (warped or same-coordinate) matches the
+				// current frame better over a 3x3 patch in the comparison domain
+				std::vector<double> fc(n.px.size()), fw(n.px.size()), fh(n.px.size());
+				for (size_t i = 0; i < n.px.size(); i++) {
+					fc[i] = comp(kLumaR * n.px[i].r + kLumaG * n.px[i].g + kLumaB * n.px[i].b, 0.1);
+					fw[i] = comp(kLumaR * warped.px[i].r + kLumaG * warped.px[i].g +
+							     kLumaB * warped.px[i].b,
+						     0.1);
+					fh[i] = comp(kLumaR * hist.px[i].r + kLumaG * hist.px[i].g +
+							     kLumaB * hist.px[i].b,
+						     0.1);
+				}
+				Image chosen = warped;
+				for (int y = 0; y < n.h; y++)
+					for (int x = 0; x < n.w; x++) {
+						double dw = 0, dh = 0;
+						for (int j = -1; j <= 1; j++)
+							for (int i = -1; i <= 1; i++) {
+								const size_t k =
+									(size_t)std::clamp(y + j, 0, n.h - 1) * n.w +
+									std::clamp(x + i, 0, n.w - 1);
+								dw += std::fabs(fc[k] - fw[k]);
+								dh += std::fabs(fc[k] - fh[k]);
+							}
+						if (dh < dw)
+							px(chosen, x, y) = hist.at(x, y);
+					}
+				warped = chosen;
+			}
 			const double g = gate.factor(n, &warped);
 			for (size_t i = 0; i < out.px.size(); i++)
 				out.px[i] = temporal_pixel(p, n.px[i], warped.px[i], g);
@@ -662,10 +736,12 @@ std::vector<std::unique_ptr<Method>> make_methods(bool quick)
 		tnlm("TNLM H 5x5 s7 t7", 2, 3, 3, NlmPolicyH, 1);
 	tnlm("TNLM B 3x3 s7 t3 g9", 1, 3, 1, NlmPolicyB, 9);
 	tnlm("TNLM B 3x3 t1 only g9", 1, 0, 0, NlmPolicyB, 9);
-	v.emplace_back(new McMethod("MC oracle exact, bilinear", 1, 0.0, false));
-	v.emplace_back(new McMethod("MC oracle exact, bicubic", 1, 0.0, true));
-	v.emplace_back(new McMethod("MC oracle 4x4 grid", 4, 0.0, true));
-	v.emplace_back(new McMethod("MC oracle 4x4 + 0.3px err", 4, 0.3, true));
+	v.emplace_back(new McMethod("MC oracle exact, bilinear", 1, 0.0, InterpBilinear));
+	v.emplace_back(new McMethod("MC oracle exact, bicubic", 1, 0.0, InterpCubic));
+	v.emplace_back(new McMethod("MC oracle exact, lanczos3", 1, 0.0, InterpLanczos3));
+	v.emplace_back(new McMethod("MC oracle 4x4 grid", 4, 0.0, InterpCubic));
+	v.emplace_back(new McMethod("MC oracle 4x4 + 0.3px err", 4, 0.3, InterpCubic));
+	v.emplace_back(new McMethod("MC 4x4 + 0.3px err + zero", 4, 0.3, InterpCubic, true));
 	return v;
 }
 
@@ -735,7 +811,19 @@ int main(int argc, char **argv)
 
 	const int W = 192, H = 144, frames = quick ? 24 : 36, warm = 12;
 	const Image world = make_world(W + 16 * 40 + 120, H + 60, 11);
-	const Image world2 = make_world(W + 16 * 40 + 120, H + 60, 99);
+	// the second shot of the cut fixture: different content, layout and exposure
+	Image world2 = make_world(W + 16 * 40 + 120, H + 60, 99);
+	{
+		const Image w2 = world2;
+		for (int y = 0; y < w2.h; y++)
+			for (int x = 0; x < w2.w; x++) {
+				Rgba p = w2.at((x + 24) % w2.w, y);
+				p.r *= 0.45;
+				p.g *= 0.45;
+				p.b *= 0.45;
+				px(world2, x, y) = p;
+			}
+	}
 	const Image obj = make_object(64, 5);
 	Runner R{noise, W, H};
 	Fixture st{FixStatic, 0, W, H, frames, world, world2, obj};
