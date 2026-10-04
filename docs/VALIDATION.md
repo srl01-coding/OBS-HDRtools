@@ -28,12 +28,17 @@ evidence for every result; never infer a result from a different layer.
 | C7 | `test_quad.cpp`: float32 mirror of the shader vs double, 400,000 interior samples incl. near-parallelograms (g ~ 1e-6, 1e-4) and strong keystones, at 3840x2160 | PASS | bilinear max 0.0016 px, projective max 0.0028 px (brief target < 0.01 px); 0 interior misses |
 | C8 | `test_quad.cpp`: outside points transparent (both models), identity exact | PASS | identity max error 0 |
 | C9 | `test_quad.cpp`: validation - accepts identity, trapezoid, brief quads, mirrored, offscreen corners, parallelogram, near-parallelogram; rejects bow-tie, duplicate, concave, sliver, collinear, out of range, NaN | PASS | |
+| C10 | `test_color.cpp`: WB(0,0) is the exact identity; 14 non-neutral WB matrices map D65 white to the brief's target white (1e-12) with white luminance preserved; + temperature warmer, - cooler, + tint magenta, - tint green | PASS | 2026-10-04: +30 mired white RGB (1.1120, 0.9857, 0.8115); tint +100 (1.1367, 0.9481, 1.1109) |
+| C11 | `check_wb_vs_brief.py`: C++ WB matrices vs the brief's section 15 Python `wb_matrix`, mired -90..90 x tint -100/0/100 | PASS | 15 matrices, max abs difference 7.8e-16 |
+| C12 | `test_color.cpp`: exposure exact (+1 EV doubles, -1 halves); contrast fixes the pivot, follows `pivot*(Y/pivot)^k` over 1e-4..1e4 nits, monotonic, black stays black, negative Y finite | PASS | |
+| C13 | `test_color.cpp`: wheel hue directions luminance-orthogonal (0/120/240 deg = R/G/B); radius clamped at 1; wheel + saturation preserve linear Y; saturation 0 gives Y-neutral grey; black preserved by the full grade; Grade Mix 0 = original and linear | PASS | linear-Y error 6.1e-16 (5,000 random grades) |
+| C14 | `test_color.cpp`: float32 mirror of `hdr-color.effect` vs double reference, 20,000 random grades x colours 0.01-10,000 nits | PASS | max error 3.6e-6 of the pixel's largest channel; neutral params bit-exact |
 
 ## Layer 1b - build
 
 | ID | Test | Status | Evidence |
 |---|---|---|---|
-| B1 | Sources compile against OBS 32.2.2 headers (`g++ -fsyntax-only -Wall -Wextra`) | PASS | no diagnostics |
+| B1 | Sources compile against OBS 32.2.2 headers (`g++ -fsyntax-only -Wall -Wextra`) | PASS | no diagnostics (re-run 2026-10-04 with P2 sources) |
 | B2 | CI Windows x64 build (OBS 31.1.1 SDK) | PASS | run 37128414670, commit c7f078b49, artifact `obs-hdr-toolkit-0.1.0-windows-x64-c7f078b49` |
 | B3 | CI macOS / Ubuntu builds, clang-format 19 + gersemi checks | PASS | same run; builds are not a macOS/Linux support claim (nothing run there) |
 
@@ -74,6 +79,28 @@ Setup as above; pattern source with `HDR Toolkit: Neutral` removed, `HDR Transfo
 | T6 | Corners outside the canvas (e.g. TL -20%,-20%) | image clipped at the output rectangle, no smearing of edge pixels | NOT RUN |
 | T7 | Transform on an SDR image source on the HLG canvas | warps correctly, colours unchanged vs no filter | NOT RUN |
 | T8 | Log: one `[transform] ... input=...` line per change; invalid geometry logs a warning | | NOT RUN |
+
+
+### P2 - HDR Color (global stages)
+
+Setup as above; pattern source with any other toolkit filter removed, `HDR Color`
+added. HLG figures below are for a 1000-nit nominal peak and independent of W
+(the pattern row is generated in absolute nits from the OBS HLG model). Use the
+waveform in RGB parade for H5. Settle sliders by typing values.
+
+| ID | Test | Expected | Status |
+|---|---|---|---|
+| H1 | New instance: every control at its default; *HLG levels only* with **Force shader render** ON vs filter disabled | identical scope (all levels incl. 105/109%); proves the neutral grade is a real shader identity | NOT RUN |
+| H2 | Exposure +1 EV, *HLG levels only* | same readings as N3: 50% -> 63.2% (~618), 70% -> 81.3% (~776), 75% -> 86.1% (~818), 90% -> 100.7% (~946), 100/105/109% at 1023 | NOT RUN |
+| H3 | Contrast 1.5, pivot 203.2 nits, *HLG levels only* | 75% bar fixed at 75% (721); 50% -> 37.4% (392), 60% -> 51.6% (516), 70% -> 67.4% (655), 80% -> 82.5% (786), 90% -> 97.3% (916), 100% and above at 1023 | NOT RUN |
+| H4 | Contrast 0.75, pivot 203.2 | 75% fixed; 10% -> 17.3% (215), 50% -> 56.9% (562), 90% -> 86.3% (820), 100% -> 93.9% (886) | NOT RUN |
+| H5 | White balance on the 75% bar (RGB parade): temperature +30 / -30 mired; tint +100 / -100 | +30: R 76.7 / G 74.8 / B 71.5%; -30: R 73.2 / G 75.1 / B 78.2%; tint +100: R 77.1 / G 74.1 / B 76.7%; tint -100: R 72.7 / G 75.8 / B 73.1%. Visually: + warmer, + tint magenta | NOT RUN |
+| H6 | Saturation 0 on the Chart | colour row (all patches 100 nits luminance) becomes one grey level at 63.0% (~616); neutral rows unchanged | NOT RUN |
+| H7 | Saturation 1.5 and wheel (0.5, 0) on the Chart, Rec.2020 primaries row | no black, white, flashing or NaN pixels; colours shift as expected. (Linear-Y preservation is a CPU test, C13: the scope's luma is non-constant-luminance Y' of HLG-encoded R'G'B', so it legitimately moves with saturation) | NOT RUN |
+| H8 | Exposure +1 EV with Grade mix 0.5 | x1.5 nits: 50% -> 58.0% (572), 75% -> 81.5% (778), 90% -> 96.3% (907). Grade mix 0 = identical to H1 | NOT RUN |
+| H9 | Set non-default values in every control, save, restart OBS (test collection) | all values restored; scope identical before/after restart; *Reset grade* returns all grade controls (not Advanced) to defaults | NOT RUN |
+| H10 | HDR Color on an SDR image source on the HLG canvas, exposure +1 EV | brightens; highlights clip at SDR white (75% at W = 203) because an SDR source stays in its native SDR space (brief 5.1: no hidden SDR -> HDR promotion) | NOT RUN |
+| H11 | Log: one `[color] ... input=...` line per context change; out-of-range values in a hand-edited scene file log `(clamped)` | | NOT RUN |
 
 ## Layer 3 - production path
 

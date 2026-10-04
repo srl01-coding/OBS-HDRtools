@@ -12,7 +12,7 @@ sharing a small colour/rendering support layer:
 | Filter | ID (stable) | Status |
 |---|---|---|
 | HDR Transform | `hdr_toolkit_transform_v1` | P1 Corner Pin (bilinear + projective) implemented; 3D modes, edge AA, mipmapping in P4 |
-| HDR Color | `hdr_toolkit_color_v1` | not started (P2, P3, P5) |
+| HDR Color | `hdr_toolkit_color_v1` | P2 global stages implemented (WB, exposure, contrast, wheel, saturation, Grade Mix); tonal zones and soft clip in P3, wheel UI and gamut containment in P5 |
 
 Developer-only objects present in P0:
 
@@ -21,9 +21,9 @@ Developer-only objects present in P0:
 | Neutral filter | `hdr_toolkit_neutral_dev` | Proves the HDR filter render path with a real shader (brief 3.5, P0 exit). |
 | Test pattern source | `hdr_toolkit_pattern_dev` | Exact extended-linear values with no video decode (brief 11.3). |
 
-`hdr_toolkit_color_v1` is deliberately **not** registered yet, so no saved scene can
-contain a stub filter whose settings schema later changes. The Transform v1 schema
-is in `docs/PARAMETER_SCHEMA.md`; P4 additions are additive.
+Both production IDs are registered with real v1 schemas (`docs/PARAMETER_SCHEMA.md`).
+Later packages add keys whose defaults reproduce v1 output exactly, so saved scenes
+are unchanged by updates; anything else needs a schema version and migration.
 
 ## Pinned baseline
 
@@ -54,14 +54,19 @@ src/
   pattern/pattern-source.cpp      developer HDR pattern source
   transform/quad-math.*           corner-pin geometry: validation, inverse bilinear, homography (no libobs)
   transform/transform-filter.cpp  HDR Transform filter
+  color/color-math.*              WB (Bradford), wheel, grade reference + float shader mirror (no libobs)
+  color/color-filter.cpp          HDR Color filter
 data/
   effects/hdr-neutral.effect
   effects/hdr-transform.effect
+  effects/hdr-color.effect
   locale/en-US.ini
 tests/cpu/
   math_check.py                   brief section 15, verbatim
   test_pattern.cpp                pattern + HLG model tests
   test_quad.cpp                   geometry, float shader mirror, validation
+  test_color.cpp                  colour stages, float shader mirror
+  check_wb_vs_brief.py            WB matrices vs the brief's Python reference
 docs/                             this file, COLOR_PIPELINE, STREAMFX_REFERENCE, VALIDATION
 ```
 

@@ -1,0 +1,115 @@
+// OBS HDR Toolkit - HDR Color (hdr_toolkit_color_v1), global stages (P2)
+// Copyright (C) 2026 srl01-coding, GPL-2.0-or-later
+//
+// Brief sections 5-7. The nits-domain body of PSGrade is mirrored line for
+// line in src/color/color-math.cpp (shader_grade) and tested there.
+// No saturate / clamp of RGB anywhere: values above SDR white and negative
+// wide-gamut components pass through.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+uniform float nits_per_unit = 203.0;
+uniform float units_per_nit = 0.004926108;
+uniform float alpha_epsilon = 0.000001;
+
+uniform float3 wb_row0 = {1.0, 0.0, 0.0};
+uniform float3 wb_row1 = {0.0, 1.0, 0.0};
+uniform float3 wb_row2 = {0.0, 0.0, 1.0};
+uniform float exposure_gain = 1.0;
+uniform float contrast_minus_one = 0.0;
+uniform float log2_pivot_over_gray = 0.0;
+uniform float gray_nits = 18.0;
+uniform float3 wheel_delta = {0.0, 0.0, 0.0};
+uniform float saturation = 1.0;
+uniform float grade_mix = 1.0;
+
+uniform float use_wb = 0.0;
+uniform float use_contrast = 0.0;
+uniform float use_wheel = 0.0;
+uniform float use_saturation = 0.0;
+uniform float use_mix = 0.0;
+
+// Linear: this pass is also the scaled draw into the scene (see hdr-neutral.effect).
+sampler_state linear_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertInOut VSDefault(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float luma(float3 c)
+{
+	// Rec.709 / D65 Y row, full precision (brief 5.1)
+	return dot(c, float3(0.212639005871510, 0.715168678767756, 0.072192315360734));
+}
+
+float3 grade_nits(float3 c_in)
+{
+	float3 c0 = c_in;
+	float3 c = c_in;
+
+	// white balance (Bradford, precomputed on the CPU)
+	if (use_wb > 0.5)
+		c = float3(dot(wb_row0, c), dot(wb_row1, c), dot(wb_row2, c));
+
+	// global exposure
+	c = c * exposure_gain;
+
+	// contrast around pivot, luminance-domain, sign-preserving gain
+	if (use_contrast > 0.5) {
+		float y = luma(c);
+		float s = log2(max(abs(y), 0.000001) / gray_nits);
+		c = c * exp2(contrast_minus_one * (s - log2_pivot_over_gray));
+	}
+
+	// global colour-balance wheel (linear-Y preserving, black stays black)
+	if (use_wheel > 0.5) {
+		float yw = max(luma(c), 0.0);
+		c = c + wheel_delta * yw;
+	}
+
+	// global saturation (linear-Y preserving)
+	if (use_saturation > 0.5) {
+		float ys = luma(c);
+		c = float3(ys, ys, ys) + saturation * (c - float3(ys, ys, ys));
+	}
+
+	// grade mix with the original (before soft clipping, brief 5.4)
+	if (use_mix > 0.5)
+		c = (1.0 - grade_mix) * c0 + grade_mix * c;
+
+	return c;
+}
+
+float4 PSGrade(VertInOut vert_in) : TARGET
+{
+	float4 px = image.Sample(linear_sampler, vert_in.uv);
+	// (Near-)transparent pixels are passed through ungraded: no division by ~0.
+	if (px.a <= alpha_epsilon)
+		return px;
+	float3 straight = px.rgb / px.a;
+	float3 graded = grade_nits(straight * nits_per_unit) * units_per_nit;
+	return float4(graded * px.a, px.a);
+}
+
+technique Grade
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSGrade(vert_in);
+	}
+}

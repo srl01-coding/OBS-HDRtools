@@ -47,6 +47,9 @@ target_sources(
     src/transform/quad-math.cpp
     src/transform/quad-math.hpp
     src/transform/transform-filter.cpp
+    src/color/color-math.cpp
+    src/color/color-math.hpp
+    src/color/color-filter.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

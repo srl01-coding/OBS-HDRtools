@@ -21,4 +21,6 @@ Governing spec: *OBS HDR Toolkit: implementation brief for Claude Code* v1.0
 
 ## Status
 P0 done (G0, N1 qualitative, N3b observed in OBS 32.2.2). P1 Corner Pin implemented
-(transform-filter.cpp; shader mirrored in quad-math.cpp - keep in lock-step). Next: P2 Color.
+(transform-filter.cpp; shader mirrored in quad-math.cpp - keep in lock-step). P2 global Color
+implemented (color-filter.cpp; hdr-color.effect mirrored in color-math.cpp shader_grade - keep in
+lock-step). Next: P3 zones + soft clip, only after the user's go-ahead.
