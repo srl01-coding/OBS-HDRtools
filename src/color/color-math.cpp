@@ -242,18 +242,50 @@ static void clampv(double &v, double lo, double hi, double def, const char *name
 
 const char *const kZoneNames[kZoneCount] = {"black", "dark", "shadow", "light", "highlight", "specular"};
 
+bool zone_fixed_open_low(int zone)
+{
+	return zone == ZoneBlack;
+}
+
+bool zone_fixed_open_high(int zone)
+{
+	return zone == ZoneSpecular;
+}
+
 ZoneParams default_zone(int zone)
 {
-	// Brief 7.1 table (project defaults, stops relative to gray_nits).
+	// Stops from gray_nits. Closed fall-back edges are given for open sides so
+	// that unticking "open" gives a sensible window.
 	static const double e[kZoneCount][4] = {
-		{kOpenLow, kOpenLow + 1, -7, -4},   {-7, -5, -3, -1}, {-4, -2, 0, 2}, {-1, 1, 2, 4}, {2, 3.5, 4.5, 6},
-		{4.5, 6, kOpenHigh, kOpenHigh + 1},
+		{-12, -11, -8, -4}, // Black: open below, full to -8, out by -4
+		{-9, -6, -4, -1},   // Dark: open below, full to -4, out by -1
+		{-6, -3, -1, 2},    // Shadow
+		{-2, 1, 2, 5},      // Light
+		{0, 3, 5, 8},       // Highlight: in from 0, full from +3, open above
+		{3, 6, 8, 9},       // Specular: in from +3, full from +6, open above
 	};
 	ZoneParams z;
 	z.a = e[zone][0];
 	z.b = e[zone][1];
 	z.c = e[zone][2];
 	z.d = e[zone][3];
+	z.open_low = zone == ZoneBlack || zone == ZoneDark;
+	z.open_high = zone == ZoneHighlight || zone == ZoneSpecular;
+	return z;
+}
+
+ZoneParams default_zone_v1(int zone)
+{
+	static const double e[kZoneCount][4] = {
+		{-12, -11, -7, -4}, {-7, -5, -3, -1}, {-4, -2, 0, 2}, {-1, 1, 2, 4}, {2, 3.5, 4.5, 6}, {4.5, 6, 8, 9},
+	};
+	ZoneParams z;
+	z.a = e[zone][0];
+	z.b = e[zone][1];
+	z.c = e[zone][2];
+	z.d = e[zone][3];
+	z.open_low = zone_fixed_open_low(zone);
+	z.open_high = zone_fixed_open_high(zone);
 	return z;
 }
 
@@ -276,6 +308,13 @@ double zone_weight(double s, double a, double b, double c, double d)
 	const double left = smooth01((s - a) / (b - a));
 	const double right = 1.0 - smooth01((s - c) / (d - c));
 	return left * right;
+}
+
+double zone_weight(double s, const ZoneParams &z)
+{
+	double e[4];
+	z.effective_edges(e);
+	return zone_weight(s, e[0], e[1], e[2], e[3]);
 }
 
 double tonal_stop(double y, double gray)
@@ -304,29 +343,34 @@ std::string sanitize(GlobalParams &p)
 		clampv(z.saturation, 0, 2, 1, (n + "saturation").c_str(), log);
 		clampv(z.wheel_x, -1, 1, 0, (n + "wheel x").c_str(), log);
 		clampv(z.wheel_y, -1, 1, 0, (n + "wheel y").c_str(), log);
-		if (i == ZoneBlack) {
-			z.a = def.a;
-			z.b = def.b;
-		} else {
-			clampv(z.a, -kEdgeLimit, kEdgeLimit, def.a, (n + "edge a").c_str(), log);
-			clampv(z.b, -kEdgeLimit, kEdgeLimit, def.b, (n + "edge b").c_str(), log);
-		}
-		if (i == ZoneSpecular) {
-			z.c = def.c;
-			z.d = def.d;
-		} else {
-			clampv(z.c, -kEdgeLimit, kEdgeLimit, def.c, (n + "edge c").c_str(), log);
-			clampv(z.d, -kEdgeLimit, kEdgeLimit, def.d, (n + "edge d").c_str(), log);
-		}
+		if (zone_fixed_open_low(i))
+			z.open_low = true;
+		if (zone_fixed_open_high(i))
+			z.open_high = true;
+		clampv(z.a, -kEdgeLimit, kEdgeLimit, def.a, (n + "edge a").c_str(), log);
+		clampv(z.b, -kEdgeLimit, kEdgeLimit, def.b, (n + "edge b").c_str(), log);
+		clampv(z.c, -kEdgeLimit, kEdgeLimit, def.c, (n + "edge c").c_str(), log);
+		clampv(z.d, -kEdgeLimit, kEdgeLimit, def.d, (n + "edge d").c_str(), log);
+		// Order the edges that are in use by pushing upward (logged); then move the
+		// unused edges of an open side out of the way (silently), so re-closing a
+		// side always gives a valid window and never overrides a used edge.
 		const ZoneParams before = z;
-		if (i != ZoneBlack)
+		if (!z.open_low)
 			z.b = std::max(z.b, z.a + kMinFalloff);
-		if (i != ZoneBlack && i != ZoneSpecular)
+		if (!z.open_low && !z.open_high)
 			z.c = std::max(z.c, z.b);
-		if (i != ZoneSpecular)
+		if (!z.open_high)
 			z.d = std::max(z.d, z.c + kMinFalloff);
 		if (z.b != before.b || z.c != before.c || z.d != before.d)
 			log += n + "edges reordered; ";
+		if (z.open_low) {
+			z.b = std::min(z.b, z.c);
+			z.a = std::min(z.a, z.b - kMinFalloff);
+		}
+		if (z.open_high) {
+			z.c = std::max(z.c, z.b);
+			z.d = std::max(z.d, z.c + kMinFalloff);
+		}
 	}
 	return log;
 }
@@ -381,10 +425,10 @@ bool make_shader_params(const GlobalParams &p, ShaderParams &s, std::string *err
 	s.grade_mix = (float)p.grade_mix;
 	for (int i = 0; i < kZoneCount; i++) {
 		const ZoneParams &z = p.zones[i];
-		s.zone_edges[i][0] = (float)z.a;
-		s.zone_edges[i][1] = (float)z.b;
-		s.zone_edges[i][2] = (float)z.c;
-		s.zone_edges[i][3] = (float)z.d;
+		double e[4];
+		z.effective_edges(e);
+		for (int k = 0; k < 4; k++)
+			s.zone_edges[i][k] = (float)e[k];
 		const bool on = z.active();
 		s.zone_ev[i] = on ? (float)z.exposure_ev : 0.0f;
 		s.zone_sat[i] = on ? (float)z.saturation : 1.0f;
@@ -421,8 +465,7 @@ static std::array<double, kZoneCount> weights_at(const GlobalParams &p, const Ve
 	std::array<double, kZoneCount> w;
 	const double s = tonal_stop(dot(kLuma, c), p.gray_nits);
 	for (int i = 0; i < kZoneCount; i++) {
-		const ZoneParams &z = p.zones[i];
-		w[i] = zone_weight(s, z.a, z.b, z.c, z.d);
+		w[i] = zone_weight(s, p.zones[i]);
 	}
 	return w;
 }

@@ -55,7 +55,9 @@ using hdrtk::color::kZoneCount;
 using hdrtk::color::ShaderParams;
 using hdrtk::color::ZoneParams;
 
-constexpr int kSchemaVersion = 1;
+// 1: P2 build and first zones build (brief 7.1 zone defaults).
+// 2: zone open ends; Dark open to black, Highlight open to peak, 3-stop falloffs.
+constexpr int kSchemaVersion = 2;
 constexpr float kAlphaEpsilon = 1e-6f;
 
 enum DiagView { DiagOff = 0, DiagZoneMask = 1, DiagAllZones = 2 };
@@ -76,13 +78,19 @@ std::string zkey(int zone, const char *suffix)
 	return std::string("zone_") + hdrtk::color::kZoneNames[zone] + "_" + suffix;
 }
 
+// Black is always open below (only c, d stored), Specular always open above
+// (only a, b stored). The four interior zones store all edges and two open flags.
 bool low_tail(int zone)
 {
-	return zone == hdrtk::color::ZoneBlack;
+	return hdrtk::color::zone_fixed_open_low(zone);
 }
 bool high_tail(int zone)
 {
-	return zone == hdrtk::color::ZoneSpecular;
+	return hdrtk::color::zone_fixed_open_high(zone);
+}
+bool interior(int zone)
+{
+	return !low_tail(zone) && !high_tail(zone);
 }
 
 // Zone index from a settings key "zone_<name>_...", or -1.
@@ -151,11 +159,17 @@ GlobalParams read_params(obs_data_t *s)
 			z.c = obs_data_get_double(s, zkey(i, "c").c_str());
 			z.d = obs_data_get_double(s, zkey(i, "d").c_str());
 		}
+		if (interior(i)) {
+			z.open_low = obs_data_get_bool(s, zkey(i, "open_low").c_str());
+			z.open_high = obs_data_get_bool(s, zkey(i, "open_high").c_str());
+		}
 	}
 	return p;
 }
 
-// UI mirror <-> stored edges.
+// UI mirror <-> stored edges. Every mirror key is derived from the edges:
+//   centre = (b + c) / 2, width = c - b, falloff below = b - a, falloff above = d - c,
+//   full strength below = c (open below), full strength above = b (open above).
 void write_zone_ui(obs_data_t *s, int i, const ZoneParams &z, bool as_default)
 {
 	auto set = [&](const char *suffix, double v) {
@@ -165,41 +179,47 @@ void write_zone_ui(obs_data_t *s, int i, const ZoneParams &z, bool as_default)
 		else
 			obs_data_set_double(s, k.c_str(), v);
 	};
-	if (low_tail(i)) {
-		set("boundary", z.c);
-		set("falloff", z.d - z.c);
-	} else if (high_tail(i)) {
-		set("boundary", z.b);
-		set("falloff", z.b - z.a);
-	} else {
+	if (!low_tail(i)) {
+		set("full_above", z.b);
+		set("fall_lo", z.b - z.a);
+	}
+	if (!high_tail(i)) {
+		set("full_below", z.c);
+		set("fall_hi", z.d - z.c);
+	}
+	if (interior(i)) {
 		set("center", 0.5 * (z.b + z.c));
 		set("width", z.c - z.b);
-		set("fall_lo", z.b - z.a);
-		set("fall_hi", z.d - z.c);
 	}
 }
 
-void ui_to_edges(obs_data_t *s, int i)
+// One mirror field changed: move only the edges it controls.
+void ui_to_edges(obs_data_t *s, int i, const char *suffix)
 {
-	auto get = [&](const char *suffix) {
-		return obs_data_get_double(s, zkey(i, suffix).c_str());
+	auto get = [&](const char *k) {
+		return obs_data_get_double(s, zkey(i, k).c_str());
 	};
-	auto set = [&](const char *suffix, double v) {
-		obs_data_set_double(s, zkey(i, suffix).c_str(), v);
+	auto set = [&](const char *k, double v) {
+		obs_data_set_double(s, zkey(i, k).c_str(), v);
 	};
-	if (low_tail(i)) {
-		set("c", get("boundary"));
-		set("d", get("boundary") + get("falloff"));
-	} else if (high_tail(i)) {
-		set("b", get("boundary"));
-		set("a", get("boundary") - get("falloff"));
-	} else {
+	const std::string sx = suffix;
+	if (sx == "center" || sx == "width") {
 		const double b = get("center") - 0.5 * get("width");
 		const double c = get("center") + 0.5 * get("width");
 		set("a", b - get("fall_lo"));
 		set("b", b);
 		set("c", c);
 		set("d", c + get("fall_hi"));
+	} else if (sx == "full_below") {
+		set("c", get("full_below"));
+		set("d", get("full_below") + get("fall_hi"));
+	} else if (sx == "full_above") {
+		set("b", get("full_above"));
+		set("a", get("full_above") - get("fall_lo"));
+	} else if (sx == "fall_lo") {
+		set("a", get("b") - get("fall_lo"));
+	} else if (sx == "fall_hi") {
+		set("d", get("c") + get("fall_hi"));
 	}
 }
 
@@ -248,6 +268,8 @@ gs_eparam_t *param(gs_effect_t *e, const char *name)
 		obs_log(LOG_ERROR, "[color] effect parameter '%s' missing", name);
 	return p;
 }
+
+void migrate_settings(obs_data_t *s, obs_source_t *source);
 
 void *color_create(obs_data_t *settings, obs_source_t *source)
 {
@@ -301,6 +323,7 @@ void *color_create(obs_data_t *settings, obs_source_t *source)
 	bfree(errors);
 	bfree(path);
 
+	migrate_settings(settings, source);
 	color_update(f, settings);
 	return f;
 }
@@ -346,13 +369,63 @@ void color_defaults(obs_data_t *s)
 			obs_data_set_default_double(s, zkey(i, "c").c_str(), z.c);
 			obs_data_set_default_double(s, zkey(i, "d").c_str(), z.d);
 		}
+		if (interior(i)) {
+			obs_data_set_default_bool(s, zkey(i, "open_low").c_str(), z.open_low);
+			obs_data_set_default_bool(s, zkey(i, "open_high").c_str(), z.open_high);
+		}
 		write_zone_ui(s, i, z, true);
 	}
 }
 
-const char *const kZoneSuffixes[] = {"enabled", "exposure_ev", "saturation", "wheel_x",  "wheel_y",
-				     "a",       "b",           "c",          "d",        "center",
-				     "width",   "fall_lo",     "fall_hi",    "boundary", "falloff"};
+// Every key a zone has ever used ("boundary"/"falloff": schema-1 UI mirror of Black/Specular).
+const char *const kZoneSuffixes[] = {"enabled", "exposure_ev", "saturation", "wheel_x",   "wheel_y", "a",     "b",
+				     "c",       "d",           "open_low",   "open_high", "center",  "width", "fall_lo",
+				     "fall_hi", "full_below",  "full_above", "boundary",  "falloff"};
+
+// Scenes saved before schema 2 carry no schema_version user value. Those saved by
+// the first zones build (they have zone keys: that build always wrote the UI
+// mirror) get their schema-1 zone ranges pinned, so installing this build does
+// not change their look (brief 10.4). P2-build scenes have no zone keys and all
+// zones neutral, so the new defaults cannot change them.
+void migrate_settings(obs_data_t *s, obs_source_t *source)
+{
+	if (obs_data_has_user_value(s, "schema_version") && obs_data_get_int(s, "schema_version") >= kSchemaVersion)
+		return;
+	bool zone_keys = false;
+	for (int i = 0; i < kZoneCount && !zone_keys; i++)
+		for (const char *suffix : kZoneSuffixes)
+			if (obs_data_has_user_value(s, zkey(i, suffix).c_str())) {
+				zone_keys = true;
+				break;
+			}
+	if (zone_keys) {
+		for (int i = 0; i < kZoneCount; i++) {
+			const ZoneParams v1 = hdrtk::color::default_zone_v1(i);
+			auto pin = [&](const char *k, double v) {
+				if (!obs_data_has_user_value(s, zkey(i, k).c_str()))
+					obs_data_set_double(s, zkey(i, k).c_str(), v);
+			};
+			if (!low_tail(i)) {
+				pin("a", v1.a);
+				pin("b", v1.b);
+			}
+			if (!high_tail(i)) {
+				pin("c", v1.c);
+				pin("d", v1.d);
+			}
+			if (interior(i)) {
+				obs_data_set_bool(s, zkey(i, "open_low").c_str(), false);
+				obs_data_set_bool(s, zkey(i, "open_high").c_str(), false);
+			}
+			obs_data_unset_user_value(s, zkey(i, "boundary").c_str());
+			obs_data_unset_user_value(s, zkey(i, "falloff").c_str());
+		}
+		obs_log(LOG_INFO,
+			"[color] '%s': settings from schema 1 - kept their zone ranges (migrated to schema %d)",
+			obs_source_get_name(source), kSchemaVersion);
+	}
+	obs_data_set_int(s, "schema_version", kSchemaVersion);
+}
 
 void unset_zone(obs_data_t *s, int i)
 {
@@ -377,10 +450,43 @@ bool zone_reset_clicked(obs_properties_t *, obs_property_t *property, void *data
 // No property refresh (it would steal focus while typing or dragging).
 bool zone_range_modified(void *, obs_properties_t *, obs_property_t *property, obs_data_t *settings)
 {
-	const int zone = zone_of_key(obs_property_name(property));
-	if (zone >= 0)
-		ui_to_edges(settings, zone);
+	const char *name = obs_property_name(property);
+	const int zone = zone_of_key(name);
+	if (zone >= 0) {
+		const std::string pre = zkey(zone, "");
+		ui_to_edges(settings, zone, name + pre.size());
+	}
 	return false;
+}
+
+void set_range_visibility(obs_properties_t *props, obs_data_t *settings, int i)
+{
+	if (!interior(i))
+		return;
+	const bool lo = obs_data_get_bool(settings, zkey(i, "open_low").c_str());
+	const bool hi = obs_data_get_bool(settings, zkey(i, "open_high").c_str());
+	auto vis = [&](const char *suffix, bool v) {
+		obs_property_t *p = obs_properties_get(props, zkey(i, suffix).c_str());
+		if (p)
+			obs_property_set_visible(p, v);
+	};
+	vis("center", !lo && !hi);
+	vis("width", !lo && !hi);
+	vis("full_below", lo && !hi);
+	vis("full_above", hi && !lo);
+	vis("fall_lo", !lo);
+	vis("fall_hi", !hi);
+}
+
+// Open-end checkbox toggled: show the matching range fields (a toggle, not typing,
+// so refreshing the view is fine).
+bool zone_open_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	const int zone = zone_of_key(obs_property_name(property));
+	if (zone < 0)
+		return false;
+	set_range_visibility(props, settings, zone);
+	return true;
 }
 
 bool reset_clicked(obs_properties_t *, obs_property_t *, void *data)
@@ -432,14 +538,10 @@ obs_property_t *range_slider(obs_properties_t *g, int zone, const char *suffix, 
 
 void add_zone_groups(obs_properties_t *props, ColorFilter *f)
 {
-	double gray = 18.0;
-	if (f) {
-		obs_data_t *s = obs_source_get_settings(f->context);
-		gray = obs_data_get_double(s, "gray_reference_nits");
-		obs_data_release(s);
-		if (!(gray > 0))
-			gray = 18.0;
-	}
+	obs_data_t *settings = f ? obs_source_get_settings(f->context) : nullptr;
+	double gray = settings ? obs_data_get_double(settings, "gray_reference_nits") : 18.0;
+	if (!(gray > 0))
+		gray = 18.0;
 	obs_properties_t *zones = obs_properties_create();
 	obs_properties_add_text(zones, "zones_info", stop_legend(gray).c_str(), OBS_TEXT_INFO);
 	for (int i = 0; i < kZoneCount; i++) {
@@ -449,18 +551,26 @@ void add_zone_groups(obs_properties_t *props, ColorFilter *f)
 		slider(g, zkey(i, "wheel_x").c_str(), "Color.Wheel.X", -1.0, 1.0, 0.001, nullptr);
 		slider(g, zkey(i, "wheel_y").c_str(), "Color.Wheel.Y", -1.0, 1.0, 0.001, nullptr);
 		// Ranges keep every stored edge within +-20 stops.
-		if (low_tail(i)) {
-			range_slider(g, i, "boundary", "Color.Zone.FullBelow", -18.0, 6.0, f);
-			range_slider(g, i, "falloff", "Color.Zone.FalloffUp", 0.05, 5.0, f);
-		} else if (high_tail(i)) {
-			range_slider(g, i, "boundary", "Color.Zone.FullAbove", -6.0, 18.0, f);
-			range_slider(g, i, "falloff", "Color.Zone.FalloffDown", 0.05, 5.0, f);
-		} else {
+		if (interior(i)) {
+			obs_property_t *o = obs_properties_add_bool(g, zkey(i, "open_low").c_str(),
+								    obs_module_text("Color.Zone.OpenLow"));
+			obs_property_set_modified_callback(o, zone_open_modified);
+			o = obs_properties_add_bool(g, zkey(i, "open_high").c_str(),
+						    obs_module_text("Color.Zone.OpenHigh"));
+			obs_property_set_modified_callback(o, zone_open_modified);
 			range_slider(g, i, "center", "Color.Zone.Center", -12.0, 12.0, f);
 			range_slider(g, i, "width", "Color.Zone.Width", 0.0, 6.0, f);
-			range_slider(g, i, "fall_lo", "Color.Zone.FalloffLow", 0.05, 5.0, f);
-			range_slider(g, i, "fall_hi", "Color.Zone.FalloffHigh", 0.05, 5.0, f);
 		}
+		if (!high_tail(i))
+			range_slider(g, i, "full_below", "Color.Zone.FullBelow", -15.0, 15.0, f);
+		if (!low_tail(i))
+			range_slider(g, i, "full_above", "Color.Zone.FullAbove", -15.0, 15.0, f);
+		if (!low_tail(i))
+			range_slider(g, i, "fall_lo", "Color.Zone.FalloffLow", 0.05, 5.0, f);
+		if (!high_tail(i))
+			range_slider(g, i, "fall_hi", "Color.Zone.FalloffHigh", 0.05, 5.0, f);
+		if (settings)
+			set_range_visibility(g, settings, i);
 		obs_properties_add_button2(g, zkey(i, "reset").c_str(), obs_module_text("Color.Zone.Reset"),
 					   zone_reset_clicked, f);
 		// Checkable group: its name is the persisted enable key.
@@ -468,6 +578,7 @@ void add_zone_groups(obs_properties_t *props, ColorFilter *f)
 					 OBS_GROUP_CHECKABLE, g);
 	}
 	obs_properties_add_group(props, "tonal_zones", obs_module_text("Color.Zones"), OBS_GROUP_NORMAL, zones);
+	obs_data_release(settings);
 }
 
 obs_properties_t *color_properties(void *data)

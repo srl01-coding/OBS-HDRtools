@@ -84,9 +84,9 @@ enum Zone { ZoneBlack = 0, ZoneDark, ZoneShadow, ZoneLight, ZoneHighlight, ZoneS
 // Stable machine names used in settings keys (zone_<name>_...).
 extern const char *const kZoneNames[kZoneCount];
 
-// Edges of the open end of Black (a, b) and Specular (c, d). Far outside any
-// reachable stop value (|s| < 40 for every finite float luminance), so the
-// one-sided windows need no special case in the shader.
+// Effective edges of an open end. Far outside any reachable stop value
+// (|s| < 40 for every finite float luminance, s >= log2(1e-6 / gray) for
+// Y <= 0), so open windows need no special case in the shader.
 constexpr double kOpenLow = -1000.0;
 constexpr double kOpenHigh = 1000.0;
 constexpr double kMinFalloff = 0.05; // stops (brief 7.1)
@@ -98,18 +98,38 @@ struct ZoneParams {
 	double saturation = 1.0;  // 0 .. 2
 	double wheel_x = 0.0;
 	double wheel_y = 0.0;
-	// Stops relative to gray_nits, a < b <= c < d. Black: a, b = open; Specular: c, d = open.
+	// Stops relative to gray_nits, a < b <= c < d.
 	double a = 0, b = 0, c = 0, d = 0;
+	// Open ends: full strength all the way down to black (and Y <= 0) / up to any
+	// peak. Black is always open below, Specular always open above. The stored
+	// edges on an open side are kept (re-closing restores them) but not used.
+	bool open_low = false;
+	bool open_high = false;
 	bool active() const { return enabled && (exposure_ev != 0 || saturation != 1 || wheel_x != 0 || wheel_y != 0); }
+	void effective_edges(double e[4]) const
+	{
+		e[0] = open_low ? kOpenLow : a;
+		e[1] = open_low ? kOpenLow + 1 : b;
+		e[2] = open_high ? kOpenHigh : c;
+		e[3] = open_high ? kOpenHigh + 1 : d;
+	}
 };
 
+// Defaults (schema 2, user-directed 4 Oct 2026): Dark open to black, Highlight
+// open to peak, 3-stop falloffs (wider overlap than the brief 7.1 table).
 ZoneParams default_zone(int zone);
 std::array<ZoneParams, kZoneCount> default_zones();
+// Schema 1 defaults (brief 7.1 table, all interior zones closed). Used only to
+// migrate scenes saved by the first zones build.
+ZoneParams default_zone_v1(int zone);
+bool zone_fixed_open_low(int zone);  // Black
+bool zone_fixed_open_high(int zone); // Specular
 
 // smooth01(t) = t^2 (3 - 2t) on the clamped mask coordinate.
 double smooth01(double t);
 // Window weight at stop value s for edges a < b <= c < d.
 double zone_weight(double s, double a, double b, double c, double d);
+double zone_weight(double s, const ZoneParams &z); // effective edges
 // Tonal coordinate of a luminance: log2(max(Y, eps) / gray). Nonpositive Y maps
 // to the lowest coordinate (Black tail) without a log of a negative number.
 double tonal_stop(double y_nits, double gray_nits);

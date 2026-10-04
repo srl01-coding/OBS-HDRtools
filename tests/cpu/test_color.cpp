@@ -50,7 +50,7 @@ int main(int argc, char **argv)
 			const double st = -12.0 + 22.0 * i / 2000.0;
 			std::printf("%.4f", st);
 			for (const auto &q : z)
-				std::printf(" %.6f", zone_weight(st, q.a, q.b, q.c, q.d));
+				std::printf(" %.6f", zone_weight(st, q));
 			std::printf("\n");
 		}
 		return 0;
@@ -249,7 +249,7 @@ int main(int argc, char **argv)
 	{
 		const auto z = default_zones();
 		auto w = [&](int i, double st) {
-			return zone_weight(st, z[i].a, z[i].b, z[i].c, z[i].d);
+			return zone_weight(st, z[i]);
 		};
 		// Continuity and range: fine sweep, no jumps, weights in [0, 1].
 		double max_jump = 0;
@@ -266,10 +266,10 @@ int main(int argc, char **argv)
 		// smoothstep max slope 1.5/falloff; narrowest default falloff 1.5 stops, step 0.001
 		std::printf("zone windows: max weight change per 0.001 stop %.3g\n", max_jump);
 		CHECK(max_jump < 0.0011, "zone window discontinuity");
-		// Full-strength plateaus and zeros outside (brief table).
-		const double full[kZoneCount] = {-8, -4, -1, 1.5, 4, 7};
-		const double zero_lo[kZoneCount] = {NAN, -7, -4, -1, 2, 4.5};
-		const double zero_hi[kZoneCount] = {-4, -1, 2, 4, 6, NAN};
+		// Full-strength plateaus and zeros outside (schema 2 defaults; NAN = open end).
+		const double full[kZoneCount] = {-8, -4, -2, 1.5, 3, 6};
+		const double zero_lo[kZoneCount] = {NAN, NAN, -6, -2, 0, 3};
+		const double zero_hi[kZoneCount] = {-4, -1, 2, 5, NAN, NAN};
 		for (int i = 0; i < kZoneCount; i++) {
 			CHECK(w(i, full[i]) == 1, "zone %s not full strength at %g", kZoneNames[i], full[i]);
 			if (!std::isnan(zero_lo[i]))
@@ -279,15 +279,27 @@ int main(int argc, char **argv)
 				CHECK(w(i, zero_hi[i]) == 0 && w(i, zero_hi[i] + 3) == 0, "zone %s upper edge",
 				      kZoneNames[i]);
 		}
-		// Tails: Black covers zero, negative and tiny luminance; Specular covers any highlight.
+		// Tails: Black and Dark cover zero, negative and tiny luminance; Highlight and
+		// Specular cover any highlight.
 		GlobalParams p;
-		for (double y : {0.0, -5.0, 1e-30, 1e-9}) {
+		for (double y : {0.0, -5.0, 1e-30, 1e-9, 0.01}) {
 			const auto ww = reference_weights(p, Vec3{y, y, y});
-			CHECK(ww[ZoneBlack] == 1, "Black tail at Y=%g: %g", y, ww[ZoneBlack]);
+			CHECK(ww[ZoneBlack] == 1 && ww[ZoneDark] == 1, "Black/Dark tail at Y=%g: %g %g", y,
+			      ww[ZoneBlack], ww[ZoneDark]);
 		}
 		for (double y : {1152.0, 1e4, 1e6, 6e4 * 203}) {
 			const auto ww = reference_weights(p, Vec3{y, y, y});
-			CHECK(ww[ZoneSpecular] == 1, "Specular tail at %g nits", y);
+			CHECK(ww[ZoneSpecular] == 1 && ww[ZoneHighlight] == 1, "Highlight/Specular tail at %g nits", y);
+		}
+		// Overlap: every adjacent pair shares at least 2 stops where both weights > 0.
+		for (int i = 0; i + 1 < kZoneCount; i++) {
+			double both = 0;
+			for (int k = 0; k < 4000; k++) {
+				const double st = -20 + 40.0 * k / 4000.0;
+				if (w(i, st) > 0 && w(i + 1, st) > 0)
+					both += 0.01;
+			}
+			CHECK(both >= 2.0, "%s/%s overlap only %.2f stops", kZoneNames[i], kZoneNames[i + 1], both);
 		}
 		CHECK(std::isfinite(tonal_stop(-1, 18)) && std::isfinite(tonal_stop(0, 18)), "tonal stop of Y<=0");
 		// Stop markers from the brief: -4 = 1.125, 0 = 18, +2 = 72, +4 = 288, +6 = 1152 nits.
@@ -305,8 +317,7 @@ int main(int argc, char **argv)
 				const double y = 18.0 * std::exp2(st);
 				const Vec3 c = {y * 1.1, y, y * 0.7}; // non-neutral: gain must be a pure RGB scale
 				const double yin = dot(kLuma, c);
-				const double wz = zone_weight(tonal_stop(yin, 18), p.zones[zi].a, p.zones[zi].b,
-							      p.zones[zi].c, p.zones[zi].d);
+				const double wz = zone_weight(tonal_stop(yin, 18), p.zones[zi]);
 				const Vec3 r = reference_grade(p, c);
 				for (int i = 0; i < 3; i++)
 					worst = std::fmax(worst, rel(r[i], c[i] * std::exp2(2.0 * wz)));
@@ -320,7 +331,7 @@ int main(int argc, char **argv)
 		GlobalParams p;
 		p.zones[ZoneShadow].exposure_ev = 3;
 		p.zones[ZoneLight].exposure_ev = -3;
-		const double y = 18.0 * std::exp2(-1.0); // Shadow full, Light weight 0
+		const double y = 18.0 * std::exp2(-2.5); // Shadow full, Light weight 0
 		const Vec3 r = reference_grade(p, Vec3{y, y, y});
 		CHECK(rel(r[0], y * 8.0) < 1e-12, "mask recomputed after zone exposure (%g vs %g)", r[0], y * 8.0);
 
@@ -328,7 +339,7 @@ int main(int argc, char **argv)
 		GlobalParams q;
 		q.zones[ZoneShadow].exposure_ev = 1;
 		q.zones[ZoneLight].exposure_ev = 0.5;
-		const double yo = 18.0 * std::exp2(0.5); // inside both windows
+		const double yo = 18.0 * std::exp2(0.0); // inside both windows
 		const auto wo = reference_weights(q, Vec3{yo, yo, yo});
 		CHECK(wo[ZoneShadow] > 0 && wo[ZoneLight] > 0, "overlap fixture");
 		const Vec3 ro = reference_grade(q, Vec3{yo, yo, yo});
@@ -398,6 +409,8 @@ int main(int argc, char **argv)
 				z.saturation = V(r2) * 2;
 				z.wheel_x = V(r2) * 2 - 1;
 				z.wheel_y = V(r2) * 2 - 1;
+				z.open_low = V(r2) > 0.5;
+				z.open_high = V(r2) > 0.7;
 			}
 			sanitize(p);
 			ShaderParams sp;
@@ -427,10 +440,33 @@ int main(int argc, char **argv)
 		const std::string log = sanitize(p);
 		const auto &z = p.zones[ZoneShadow];
 		CHECK(z.b == 1 + kMinFalloff && z.c == z.b && z.d == z.c + kMinFalloff, "interior reorder");
-		CHECK(p.zones[ZoneBlack].d == -7 + kMinFalloff, "black reorder");
-		CHECK(p.zones[ZoneSpecular].a == 4.5, "non-finite edge not reset");
-		CHECK(p.zones[ZoneBlack].a == kOpenLow && p.zones[ZoneSpecular].d == kOpenHigh + 1, "open ends");
+		CHECK(p.zones[ZoneBlack].d == -8 + kMinFalloff, "black reorder");
+		CHECK(p.zones[ZoneSpecular].a == 3, "non-finite edge not reset");
+		double e[4];
+		p.zones[ZoneBlack].effective_edges(e);
+		CHECK(e[0] == kOpenLow, "black not open below");
+		p.zones[ZoneSpecular].effective_edges(e);
+		CHECK(e[3] == kOpenHigh + 1, "specular not open above");
 		CHECK(!log.empty(), "no sanitize log");
+
+		// Open-low Dark: moving 'full below' under the unused stored b must not be overridden.
+		GlobalParams q;
+		q.zones[ZoneDark].c = -10;
+		q.zones[ZoneDark].d = -7;
+		const std::string l2 = sanitize(q);
+		CHECK(q.zones[ZoneDark].c == -10 && q.zones[ZoneDark].d == -7, "open side overrode a used edge");
+		CHECK(q.zones[ZoneDark].b <= -10 && q.zones[ZoneDark].a < q.zones[ZoneDark].b,
+		      "hidden edges not moved");
+		CHECK(l2.empty(), "hidden-edge tidy logged as a problem: %s", l2.c_str());
+		q.zones[ZoneDark].open_low = false; // re-closing gives a valid window
+		CHECK(q.zones[ZoneDark].a < q.zones[ZoneDark].b && q.zones[ZoneDark].b <= q.zones[ZoneDark].c,
+		      "re-closed window invalid");
+		// Fixed open ends cannot be closed.
+		GlobalParams r;
+		r.zones[ZoneBlack].open_low = false;
+		r.zones[ZoneSpecular].open_high = false;
+		sanitize(r);
+		CHECK(r.zones[ZoneBlack].open_low && r.zones[ZoneSpecular].open_high, "fixed open end closed");
 	}
 
 	{
@@ -455,13 +491,13 @@ int main(int argc, char **argv)
 		const auto z = default_zones();
 		for (int i = 0; i < kZoneCount; i++) {
 			const double fall_lo = z[i].b - z[i].a, fall_hi = z[i].d - z[i].c;
-			if (i != ZoneSpecular) { // positive push against the upper falloff
+			if (!z[i].open_high) { // positive push against the upper falloff
 				const double lim = fall_hi / 1.5;
 				CHECK(min_slope(i, 0.98 * lim) > 0, "%s +%.2f EV reversed", kZoneNames[i], 0.98 * lim);
 				CHECK(min_slope(i, 1.1 * lim) < 0, "%s +%.2f EV should reverse", kZoneNames[i],
 				      1.1 * lim);
 			}
-			if (i != ZoneBlack) { // negative push against the lower falloff
+			if (!z[i].open_low) { // negative push against the lower falloff
 				const double lim = fall_lo / 1.5;
 				CHECK(min_slope(i, -0.98 * lim) > 0, "%s -%.2f EV reversed", kZoneNames[i], 0.98 * lim);
 				CHECK(min_slope(i, -1.1 * lim) < 0, "%s -%.2f EV should reverse", kZoneNames[i],
