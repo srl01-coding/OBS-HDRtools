@@ -52,6 +52,9 @@ target_sources(
     src/color/color-filter.cpp
     src/denoise/d3d11-compute.cpp
     src/denoise/d3d11-compute.hpp
+    src/denoise/denoise-core.cpp
+    src/denoise/denoise-core.hpp
+    src/denoise/denoise-filter.cpp
     src/denoise/hqdn3d-math.cpp
     src/denoise/hqdn3d-math.hpp
     src/denoise/noise-profile.cpp

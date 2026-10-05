@@ -178,3 +178,20 @@ capability probe is the exception, because it only queries the driver.
 8. NLMeans only if residual noise warrants it.
 
 The Temporal NLMeans GPU prototype is deprioritised. The CPU engine stays.
+
+## Placement and NLMeans (5 Oct, `PLACEMENT_UPDATE.md`)
+
+- **NLMeans is parked.** The design and the CPU references stay; there is no GPU, UI or
+  benchmarking work until there is evidence of a residual spatial-noise problem.
+- **Priority:**
+  1. temporal HQDN3D-style;
+  2. placement;
+  3. spatial optimisation;
+  4. NVOFA (source level preferred);
+  5. T(Y);
+  6. NLMeans only if needed.
+- **Placement is implemented** as one core with two front-ends (`PLACEMENT.md`):
+  - the *HDR Denoise* source filter, recommended for quality;
+  - *HDR Program Denoise*, the economy and fallback option.
+- **User observation (5 Oct):** one source with spatial on used about 20% GPU (3D) on the
+  GTX 1650 Super. Temporal had no observable cost.

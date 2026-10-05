@@ -48,4 +48,9 @@ clip is post-encoder; footage never committed - real people). GPU NLM/NVOF integ
 A TNLM GPU deprioritised; B NVOFA after NV-G0; C T(Y) noise profile implemented (noise-profile.cpp, shader
 profile_mult, identity default, development curve "measured 2026-10-05", max multiplier; curve NOT frozen); D P1 continues,
 HQ response = MC confidence; E spatial NLM lower priority. Next motion sample = motion footage (user).
+5 Oct (PLACEMENT_UPDATE.md): NLMeans PARKED (no GPU/UI/benchmark work). Placement implemented: denoise-core.cpp
+(shared core + settings model + telemetry + shared effect) with two front-ends: denoise-filter.cpp ("HDR Denoise",
+hdr_toolkit_denoise_filter_v1, per-frame dedupe, continuity reset >2.5 frame intervals, protection default off) and
+program-denoise.cpp. Never duplicate algorithm code between front-ends. Gates PL-* NOT RUN. Debug gain up to 1024;
+Temporal weight debug view.
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

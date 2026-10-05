@@ -9,11 +9,19 @@ HDR-safe video filters for OBS Studio, working in OBS's linear HDR space without
   saturation, colour-balance wheel, seven tonal zones, linear offset, Grade Mix,
   and low / high soft clip.
 
-* **HDR Program Denoise** (Tools menu, in development) - processes the finished
-  program picture once per frame after transitions. HQDN3D-style spatial + temporal
-  denoise (an independent implementation) with scene-cut reset and transition
-  protection, in OBS's HDR working space; plus an Identity transparency test and a
-  D3D11 compute spike (Windows). NLMeans follows.
+* **HDR Denoise** (source filter) and **HDR Program Denoise** (Tools menu), in
+  development: HQDN3D-style spatial + temporal denoise in OBS's HDR working space (an
+  independent implementation), with scene-cut reset and transition protection.
+
+  **Placement.**
+  - For the highest denoise quality, add *HDR Denoise* directly to each camera source,
+    before HDR Color, perspective correction and scaling. This gives temporal processing
+    a continuous, camera-specific history and avoids denoising noise that has already
+    been resampled.
+  - If GPU load is a concern, use *HDR Program Denoise* to process the final composited
+    output once.
+  - A useful hybrid is source-level temporal denoise on each camera, with one spatial
+    cleanup pass at program level.
 
 Developer tools in the same package: **HDR Toolkit: Test Pattern (developer)**
 (exact HDR values: neutral patches 0-10,000 nits, log ramp, HLG 0-109% levels,

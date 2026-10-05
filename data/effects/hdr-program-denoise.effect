@@ -18,6 +18,7 @@ uniform texture2d hist_tex;   // temporal history (previous filtered frame)
 uniform texture2d filt_tex;   // this frame's filtered result (output pass)
 uniform texture2d metric_tex; // 1 x 1: r = frame metric m, g = static-noise floor, b = floor valid
 uniform texture2d prev_metric_tex;
+uniform texture2d src_tex;    // temporal input (after spatial), for the weight view
 
 uniform float2 tex_size = {3840.0, 2160.0}; // full frame
 uniform float2 in_size = {1.0, 1.0};        // input of a reduction pass
@@ -33,7 +34,7 @@ uniform float protect_amount = 0.8;
 uniform float cut_enabled = 1.0;
 uniform float reset = 0.0;         // history invalid this frame
 uniform float mix_amount = 1.0;
-uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar, 4 exact
+uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar, 4 exact, 5 weight
 uniform float debug_gain = 16.0;
 uniform float s_t_luma = 0.0;      // spatial thresholds, log2 units (0 = off)
 uniform float s_t_chroma = 0.0;
@@ -188,6 +189,24 @@ float global_factor(float m, float fl)
 	return 1.0 - protect_amount * prot;
 }
 
+// history weights (luma, chroma) for current c and history h, both in nits
+float2 temporal_weights(float3 c, float3 h, float g)
+{
+	float yc = luma(c);
+	float yh = luma(h);
+	float3 cc = c - float3(yc, yc, yc);
+	float3 ch = h - float3(yh, yh, yh);
+	float mp = profile_mult(0.5 * (abs(yh) + abs(yc)));
+	float tl = t_luma * mp;
+	float tc = t_chroma * mp;
+	float dl = abs(comp(yh) - comp(yc));
+	float3 dv = ch - cc;
+	float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yh) + abs(yc)) + knee) * 1.442695041;
+	float wl = tl > 0.0 ? 0.9 * response(dl / tl) * g : 0.0;
+	float wc = tc > 0.0 ? 0.9 * response(dc / tc) * g : 0.0;
+	return float2(wl, wc);
+}
+
 float4 PSTemporal(VertInOut vert_in) : TARGET
 {
 	int2 p = int2(vert_in.uv * tex_size);
@@ -202,14 +221,9 @@ float4 PSTemporal(VertInOut vert_in) : TARGET
 	float yh = luma(h);
 	float3 cc = c - float3(yc, yc, yc);
 	float3 ch = h - float3(yh, yh, yh);
-	float mp = profile_mult(0.5 * (abs(yh) + abs(yc)));
-	float tl = t_luma * mp;
-	float tc = t_chroma * mp;
-	float dl = abs(comp(yh) - comp(yc));
-	float3 dv = ch - cc;
-	float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yh) + abs(yc)) + knee) * 1.442695041;
-	float wl = tl > 0.0 ? 0.9 * response(dl / tl) * g : 0.0;
-	float wc = tc > 0.0 ? 0.9 * response(dc / tc) * g : 0.0;
+	float2 w = temporal_weights(c, h, g);
+	float wl = w.x;
+	float wc = w.y;
 	if (wl == 0.0 && wc == 0.0)
 		return cur; // exact identity
 	float yo = yc + wl * (yh - yc);
@@ -284,6 +298,16 @@ float4 PSOutput(VertInOut vert_in) : TARGET
 	float4 cur = image.Load(int3(p, 0));
 	float4 filt = filt_tex.Load(int3(p, 0));
 
+	if (debug_mode > 4.5) {
+		// temporal weight: how much history this frame used (white = 0.9, the maximum;
+		// black = current frame only). Luma weight in grey, chroma weight in blue.
+		float4 mt = metric_tex.Load(int3(0, 0, 0));
+		float g = global_factor(mt.r, mt.g);
+		float4 sv = src_tex.Load(int3(p, 0));
+		float4 hv = hist_tex.Load(int3(p, 0));
+		float2 w = temporal_weights(sv.rgb * nits_per_unit, hv.rgb * nits_per_unit, g) / 0.9;
+		return float4(w.x, w.x, 0.5 * (w.x + w.y), 1.0);
+	}
 	if (debug_mode > 3.5) {
 		// exact-value identity check: black = unchanged, magenta = any component changed
 		bool same = filt.r == cur.r && filt.g == cur.g && filt.b == cur.b && filt.a == cur.a;
