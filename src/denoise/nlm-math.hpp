@@ -53,6 +53,7 @@ struct NlmParams {
 	// temporal candidate weight multiplier (1..9): with the self weight fixed at 1, a single
 	// temporal match could otherwise never exceed a 50% share
 	double tgain = 1.0;
+	NoiseProfile profile; // h multiplier vs the centre pixel's luminance (identity by default)
 };
 
 constexpr double kNlmCutoff = 12.0; // D / h^2 above this -> weight 0

@@ -166,3 +166,15 @@ footage. That includes the NLMeans compute kernels and the NVOFA integration. Th
 capability probe is the exception, because it only queries the driver.
 
 `MOTION_AWARE_TEMPORAL.md` holds the design notes and results for P2.5.
+
+**5 Oct decisions** (`HIGH_BITRATE_ANALYSIS.md`, section 14). Implementation order:
+1. P1 HQ temporal run;
+2. T(Y) noise profile (done: `NOISE_PROFILE.md`);
+3. compute safety;
+4. NV-G0;
+5. NVOFA history warp;
+6. same-position vs warped-history confidence, using the HQ response;
+7. light spatial cleanup as needed;
+8. NLMeans only if residual noise warrants it.
+
+The Temporal NLMeans GPU prototype is deprioritised. The CPU engine stays.

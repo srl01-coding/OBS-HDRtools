@@ -13,6 +13,7 @@
 //        denoise_sim --process METHOD S in.raw out.raw W H N   (float32 RGB nits)
 #include "denoise/hqdn3d-math.hpp"
 #include "denoise/nlm-math.hpp"
+#include "denoise/noise-profile.hpp"
 #include "denoise/spatial-math.hpp"
 
 #include <algorithm>
@@ -292,12 +293,11 @@ struct Fixture {
 
 // ---- noise -------------------------------------------------------------------------
 
-// Measured (NOISE_MODEL.md) luma noise relative to level; log-linear interpolation.
-double rel_sigma(double Y)
+// Luma noise relative to level (linear light); log-linear interpolation, constant outside.
+// enc / white2: the 20 Mbit/s clip (NOISE_MODEL.md, superseded for calibration).
+// hb: the 5 Oct high-bitrate clip (NOISE_PROFILE.md): 2.27 / 35.6 / 64.4 / 89.4 nits.
+double rel_sigma_table(const double (*lv)[2], int n, double Y)
 {
-	static const double lv[][2] = {{5, 0.04},     {23, 0.023},   {114, 0.0089},
-				       {280, 0.0072}, {378, 0.0051}, {1000, 0.004}};
-	const int n = 6;
 	if (Y <= lv[0][0])
 		return lv[0][1];
 	for (int i = 1; i < n; i++)
@@ -308,12 +308,22 @@ double rel_sigma(double Y)
 	return lv[n - 1][1];
 }
 
+enum NoiseModel { NoiseEnc, NoiseWhite2, NoiseHb };
+
+double rel_sigma(NoiseModel m, double Y)
+{
+	static const double enc[][2] = {{5, 0.04},     {23, 0.023},   {114, 0.0089},
+					{280, 0.0072}, {378, 0.0051}, {1000, 0.004}};
+	static const double hb[][2] = {{2.27, 0.0514}, {35.6, 0.0137}, {64.4, 0.0106}, {89.4, 0.0089}};
+	return m == NoiseHb ? rel_sigma_table(hb, 4, Y) : rel_sigma_table(enc, 6, Y);
+}
+
+NoiseProfile g_profile; // applied to every method (--profile measured)
+
 // Fitted to the measured autocorrelation (lags 1-8): horizontal and vertical half-kernels.
 const double kKh[] = {1.0,    0.7877, 0.3021, 0.1354, 0.2693, 0.0516, 0.2231,
 		      0.1243, 0.1318, 0.0914, 0.0117, 0.0104, 0.1297};
 const double kKv[] = {1.0, 0.3474, 0.0659, 0.094, 0.0489, 0.0348};
-
-enum NoiseModel { NoiseEnc, NoiseWhite2 };
 
 std::vector<double> noise_plane(int w, int h, NoiseModel m, std::mt19937_64 &rng)
 {
@@ -323,7 +333,7 @@ std::vector<double> noise_plane(int w, int h, NoiseModel m, std::mt19937_64 &rng
 	std::vector<double> a((size_t)W * H);
 	for (auto &v : a)
 		v = N(rng);
-	if (m == NoiseWhite2) {
+	if (m != NoiseEnc) { // white (hb: temporally ~white per the analysis; spatial correlation unmeasured)
 		std::vector<double> o((size_t)w * h);
 		for (int y = 0; y < h; y++)
 			for (int x = 0; x < w; x++)
@@ -366,7 +376,7 @@ Image add_noise(const Image &clean, NoiseModel m, uint64_t seed)
 	Image o = clean;
 	for (size_t i = 0; i < o.px.size(); i++) {
 		const double Y = luma(clean.px[i]);
-		const double sy = amp * rel_sigma(std::max(Y, 0.5)) * std::max(Y, 0.5);
+		const double sy = amp * rel_sigma(m, std::max(Y, 0.5)) * std::max(Y, 0.5);
 		const double sc = 0.6 * sy;
 		const double dY = sy * n0[i];
 		const double dc[3] = {sc * (n1[i] * u[0] + n2[i] * v[0]), sc * (n1[i] * u[1] + n2[i] * v[1]),
@@ -431,11 +441,13 @@ struct Hqdn3dMethod : Method {
 			sp.luma = S * spatial_ratio;
 			sp.chroma = 1.5 * S * spatial_ratio;
 			sp.radius = 8;
+			sp.profile = g_profile;
 			spatial_b(sp, n, src);
 		}
 		Params p = gate.p;
 		p.temporal_luma = S;
 		p.temporal_chroma = 1.5 * S;
+		p.profile = g_profile;
 		const double g = gate.factor(src, valid ? &hist : nullptr);
 		Image out = src;
 		if (valid)
@@ -457,6 +469,7 @@ struct NlmMethod : Method {
 	Image step(const Image &n, const Frame &, double S) override
 	{
 		NlmParams p = base;
+		p.profile = g_profile;
 		p.luma = S;
 		p.chroma = 1.5 * S;
 		double g = 0;
@@ -500,6 +513,7 @@ struct McMethod : Method {
 		Params p = gate.p;
 		p.temporal_luma = S;
 		p.temporal_chroma = 1.5 * S;
+		p.profile = g_profile;
 		Image out = n;
 		if (valid) {
 			Image warped = n;
@@ -774,9 +788,14 @@ int main(int argc, char **argv)
 	NoiseModel noise = NoiseEnc;
 	bool quick = false;
 	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--noise") && i + 1 < argc)
-			noise = !strcmp(argv[++i], "white2") ? NoiseWhite2 : NoiseEnc;
-		else if (!strcmp(argv[i], "--quick"))
+		if (!strcmp(argv[i], "--noise") && i + 1 < argc) {
+			const char *nm = argv[++i];
+			noise = !strcmp(nm, "white2") ? NoiseWhite2 : !strcmp(nm, "hb") ? NoiseHb : NoiseEnc;
+		} else if (!strcmp(argv[i], "--profile") && i + 1 < argc) {
+			const char *pm = argv[++i];
+			g_profile = builtin_profile(!strcmp(pm, "measured") ? ProfileMeasured20261005 : ProfileIdentity,
+						    3.0);
+		} else if (!strcmp(argv[i], "--quick"))
 			quick = true;
 		else if (!strcmp(argv[i], "--export") && i + 2 < argc) {
 			// codec test material: --export DIR KIND   (KIND: object | pan)
@@ -867,10 +886,11 @@ int main(int argc, char **argv)
 	Runner R{noise, W, H};
 	Fixture st{FixStatic, 0, W, H, frames, world, world2, obj};
 	const double target = 0.5;
-	printf("noise model: %s; frame %dx%d, %d frames (first %d excluded)\n",
-	       noise == NoiseEnc ? "measured encoded (correlated, ~0.9%% at 100-300 nits)"
-				 : "white, 2x measured amplitude",
-	       W, H, frames, warm);
+	printf("noise model: %s; noise profile: %s; frame %dx%d, %d frames (first %d excluded)\n",
+	       noise == NoiseEnc  ? "20 Mbit/s clip, post-encoder (correlated, ~0.7-0.9% at 100-300 nits)"
+	       : noise == NoiseHb ? "5 Oct high-bitrate clip (white, 1.1% at 64 nits, 5.1% at 2.3 nits)"
+				  : "white, 2x the 20 Mbit/s amplitude",
+	       g_profile.n ? "measured 2026-10-05 (max 3)" : "identity", W, H, frames, warm);
 	printf("strength matched so the WALL luma error is %.2f x the input noise (* = not reachable: best S shown)\n",
 	       target);
 	printf("ratios = output error rms / input noise rms vs the clean frame, luma in F = log2(1+Y/0.1) units;\n"

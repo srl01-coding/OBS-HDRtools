@@ -25,6 +25,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * Values are linear RGB in nominal nits.
  */
 
+#include "noise-profile.hpp"
+
 #include <cstdint>
 #include <vector>
 
@@ -43,6 +45,7 @@ constexpr int kSub = 4;    // 4 x 4 samples per first-level block
 
 struct Params {
 	double temporal_luma = 0.0;   // 0..20
+	NoiseProfile profile;         // threshold multiplier vs luminance (identity by default)
 	double temporal_chroma = 0.0; // 0..20
 	double k_nits = 0.1;          // comparison knee
 	bool cut_reset = true;
@@ -86,6 +89,7 @@ double floor_update(double m, double f_prev, bool f_valid);
 // ---- float32 mirror of the shader (operation order as in the .effect) -----
 struct ShaderParams {
 	float t_luma, t_chroma, k, m_cut, protect_amount, cut_enabled;
+	ShaderProfile profile;
 };
 ShaderParams make_shader_params(const Params &p);
 float global_factor_f(const ShaderParams &s, float m, float f, bool reset);

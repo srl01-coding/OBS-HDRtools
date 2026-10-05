@@ -54,6 +54,8 @@ target_sources(
     src/denoise/d3d11-compute.hpp
     src/denoise/hqdn3d-math.cpp
     src/denoise/hqdn3d-math.hpp
+    src/denoise/noise-profile.cpp
+    src/denoise/noise-profile.hpp
     src/denoise/nvof-probe.cpp
     src/denoise/nvof-probe.hpp
     src/denoise/program-denoise.cpp

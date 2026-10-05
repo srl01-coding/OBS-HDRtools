@@ -6,6 +6,20 @@ the amendment takes precedence where they differ. There are three candidates:
 - **Temporal NLMeans**, with causal (dx, dy, -1) patch candidates (`NLMEANS_DESIGN.md`);
 - **NVOFA motion-compensated temporal**: optical flow, warped history, confidence.
 
+> **Update 5 Oct 2026 (`HIGH_BITRATE_ANALYSIS.md`).** The high-bitrate clip shows that the
+> pre-encode noise is temporally close to white (lag-1 0.10-0.27). The **enc** noise model
+> below (from the 20 Mbit/s clip) is therefore superseded for calibration. Findings that
+> rest only on it are marked as such: chiefly finding 4, "spatial filtering is nearly
+> useless on correlated noise". Section 7 repeats the comparison with the high-bitrate
+> (`hb`) model and the new noise profile.
+>
+> The instructing AI's decisions:
+> - A: Temporal NLMeans GPU prototype deprioritised;
+> - B: NVOFA proceeds after NV-G0;
+> - C: T(Y) abstraction now, curve not frozen;
+> - D: P1 continues, and the HQ response serves as the MC confidence;
+> - E: spatial NLMeans lower priority.
+
 Status: everything below was run on the CPU only. There is no GPU and no NVIDIA
 hardware here.
 - NVOFA is represented by **oracle flow**: the exact motion of the synthetic fixtures,
@@ -151,7 +165,8 @@ enc|white2`.
 
    Its cost was not measured. On this evidence Temporal NLMeans is not the
    premium-temporal candidate, unless real pre-encode footage contradicts it (section 5).
-4. **Noise correlation decides whether spatial filtering is worth anything.**
+4. **Noise correlation decides whether spatial filtering is worth anything.** This rests
+   on the superseded enc model; see section 7 for the hb model.
    - On the measured (encoded, correlated) noise, no method with a spatial search could
      reach a 0.50 wall error at any strength (best 0.61-0.89).
    - On white noise, spatial NLMeans reaches it, and in pans it matches MC (0.49-0.51).

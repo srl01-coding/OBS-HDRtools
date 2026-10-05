@@ -37,6 +37,7 @@ void sanitize(NlmParams &p)
 	cl(p.lambda, 0, 10, 0);
 	cl(p.cap, 0, 1, 0.9);
 	cl(p.tgain, 0, 16, 1);
+	sanitize(p.profile);
 	p.patch = std::clamp(p.patch, 0, 4);
 	p.search = std::clamp(p.search, 0, 10);
 	p.tsearch = std::clamp(p.tsearch, 0, 10);
@@ -228,7 +229,9 @@ void nlm_naive(const NlmParams &p, const NlmFrame &f, Image &out)
 						D += pixel_e(p, r.cur, r.cur.at(x + qx, y + qy), dref,
 							     dref.at(x + qx + c.dx, y + qy + c.dy));
 				D *= inv;
-				double wl = weight(D, hl), wc = weight(D, hc);
+				const double mp =
+					profile_multiplier(p.profile, std::fabs(r.cur.y[(size_t)y * cur.w + x]));
+				double wl = weight(D, hl * mp), wc = weight(D, hc * mp);
 				if (c.temporal) {
 					wl *= f.g * p.tgain;
 					wc *= f.g * p.tgain;
@@ -264,6 +267,9 @@ void nlm_offset_share(const NlmParams &p, const NlmFrame &f, Image &out, std::ve
 	const double inv = 1.0 / ((2 * P + 1) * (2 * P + 1));
 
 	std::vector<Acc> acc((size_t)W * H);
+	std::vector<double> mpv((size_t)W * H);
+	for (size_t i = 0; i < mpv.size(); i++)
+		mpv[i] = profile_multiplier(p.profile, std::fabs(r.cur.y[i]));
 	const int PW = W + 2 * P, PH = H + 2 * P;
 	std::vector<double> e((size_t)PW * PH), rows((size_t)W * PH);
 	for (const Candidate &c : cand) {
@@ -298,7 +304,8 @@ void nlm_offset_share(const NlmParams &p, const NlmFrame &f, Image &out, std::ve
 				if (cx < 0 || cy < 0 || cx >= W || cy >= H)
 					continue;
 				const double D = s * inv;
-				double wl = weight(D, hl), wc = weight(D, hc);
+				const double mp = mpv[(size_t)y * W + x];
+				double wl = weight(D, hl * mp), wc = weight(D, hc * mp);
 				if (c.temporal) {
 					wl *= f.g * p.tgain;
 					wc *= f.g * p.tgain;

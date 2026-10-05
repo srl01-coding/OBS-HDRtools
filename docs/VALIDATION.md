@@ -56,6 +56,7 @@ evidence for every result; never infer a result from a different layer.
 | C35 | `tools/denoise-sim` synthetic premium-temporal comparison (encoded and white noise models; static, moving object 0.5-16 px/frame, disocclusion, pan, cut) | RUN (informative, not a gate) | results and reading: `docs/denoise/MOTION_AWARE_TEMPORAL.md` section 2-3 |
 | C36 | `tools/denoise-sim/real_eval.py` on six crops of the 4 Oct sample clip (second-generation: encoder residue, not camera noise) | RUN (informative) | `docs/denoise/MOTION_AWARE_TEMPORAL.md` section 6 |
 | C37 | `tools/denoise-sim/codec_test.py`: x265 Main10 HLG at 0.07 / 0.035 bpp vs the clean reference | RUN (informative) | `docs/denoise/MOTION_AWARE_TEMPORAL.md` section 6 |
+| C38 | `test_profile.cpp`: noise profile T(Y): identity exactly 1 (also all-ones anchors); measured profile anchors, clamp, constant ends, log-linear midpoint 1.15, monotone; float mirror 4.6e-7; sanitize; temporal with the profile: darks (2.27 nits, 5%) use history more in 89% of pixels, reference level unchanged in 99%; temporal/spatial float mirrors with the profile 1.2e-6 / 8e-7; NLM naive = offset with the profile; all earlier CPU tests unchanged with the identity profile | PASS | 2026-10-05 |
 
 ## Layer 1b - build
 
@@ -221,6 +222,8 @@ with debug view *Normal*, because the compare views add copies.
 | CS4 | HDR Transform + HDR Color on the camera source, compute identity on | grade and transform unchanged versus Off (OBS graphics state not disturbed) | NOT RUN |
 | CS5 | Change canvas resolution, then back; switch variants and algorithms repeatedly | resources recreated (log line each time), no black frame, no crash | NOT RUN |
 | CS6 | Optional: D3D11 debug layer (Graphics Tools + `--debug`-style run) | no D3D11 errors or hazards from the spike | NOT RUN |
+| NP1 | HQDN3D-style on, Development > *Noise profile* = Off, then = Measured, all strengths 0, *Run spatial passes at strength 0* on, debug view *Exact change* | black in both cases (the profile only scales thresholds; at S = 0 the shaders stay exact identities) | NOT RUN |
+| NP2 | Temporal luma 4 / chroma 6, a scene with a dark area (piano / TV) and a mid wall; *What was removed* x16; noise profile Off vs Measured (max 3), then max 5 | with Measured, the dark area shows grain removed where Off removed nothing; the wall looks the same; no dark structure (edges, text) appears in the removed view; log line shows `noise_profile=measured-2026-10-05 (max 3.0)` | NOT RUN |
 | NV-G0 | Development > *Probe NVIDIA optical-flow hardware* | log lines `[nvof-probe] ...`: max API version, CUDA/D3D11/D3D12 entry points, and per device either `optical-flow engine available; output grids {...}` or `NOT available`; OBS keeps running normally (the probe uses its own CUDA context) | NOT RUN |
 | CS7 | Renderer set to OpenGL (or SDR canvas) | log once: `compute identity unavailable (...): passing the program through`; picture unchanged | NOT RUN |
 

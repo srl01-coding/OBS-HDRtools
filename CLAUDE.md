@@ -44,4 +44,8 @@ design + CPU refs (nlm-math, candidates (dx,dy,dt), policies A/B/H, tgain), tool
 MC (no optical-flow code may be written without authorisation), NVOF capability probe (nvof-probe.cpp, vendored BSD-3
 headers in third_party/nvof). Findings: docs/denoise/MOTION_AWARE_TEMPORAL.md; measured noise: NOISE_MODEL.md (sample
 clip is post-encoder; footage never committed - real people). GPU NLM/NVOF integration waits for CS gates + user.
+5 Oct: HIGH_BITRATE_ANALYSIS.md (instructing AI) supersedes the 20 Mbit/s noise model for calibration. Decisions:
+A TNLM GPU deprioritised; B NVOFA after NV-G0; C T(Y) noise profile implemented (noise-profile.cpp, shader
+profile_mult, identity default, development curve "measured 2026-10-05", max multiplier; curve NOT frozen); D P1 continues,
+HQ response = MC confidence; E spatial NLM lower priority. Next motion sample = motion footage (user).
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

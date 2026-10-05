@@ -40,10 +40,11 @@ constexpr double kBetaS = 0.9; // spatial decay per tap (B) / maximum recursion 
 constexpr int kSpatialRadiusMax = 12;
 
 struct SpatialParams {
-	double luma = 0.0;   // S_L, 0..20 -> T_L = 0.01 S_L
-	double chroma = 0.0; // S_C, 0..20
-	double k_nits = 0.1; // comparison knee (shared with temporal)
-	int radius = 8;      // B only: 1..12 (tested 6, 8, 12)
+	double luma = 0.0;    // S_L, 0..20 -> T_L = 0.01 S_L
+	double chroma = 0.0;  // S_C, 0..20
+	double k_nits = 0.1;  // comparison knee (shared with temporal)
+	int radius = 8;       // B only: 1..12 (tested 6, 8, 12)
+	NoiseProfile profile; // threshold multiplier vs luminance (identity by default)
 };
 
 void sanitize(SpatialParams &p);
@@ -58,6 +59,7 @@ void spatial_b(const SpatialParams &p, const Image &in, Image &out);
 struct SpatialShaderParams {
 	float t_luma, t_chroma, k;
 	int radius;
+	ShaderProfile profile;
 };
 SpatialShaderParams make_spatial_shader_params(const SpatialParams &p);
 // Values are rounded to float on read; the result is stored as float values.

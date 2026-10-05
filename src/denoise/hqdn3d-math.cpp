@@ -41,6 +41,7 @@ void sanitize(Params &p)
 	clampv(p.k_nits, 0.001, 10, 0.1);
 	clampv(p.cut_sensitivity, 0, 100, 50);
 	clampv(p.protection_amount, 0, 1, 0.8);
+	sanitize(p.profile);
 }
 
 double comp(double y, double k)
@@ -96,10 +97,11 @@ double global_factor(const Params &p, double m, double f, bool reset, bool *cut)
 
 Rgba temporal_pixel(const Params &p, const Rgba &cur, const Rgba &hist, double g)
 {
-	const double tl = kThresholdPerUnit * p.temporal_luma;
-	const double tc = kThresholdPerUnit * p.temporal_chroma;
 	const double yc = kLumaR * cur.r + kLumaG * cur.g + kLumaB * cur.b;
 	const double yh = kLumaR * hist.r + kLumaG * hist.g + kLumaB * hist.b;
+	const double mp = profile_multiplier(p.profile, 0.5 * (std::fabs(yh) + std::fabs(yc)));
+	const double tl = kThresholdPerUnit * p.temporal_luma * mp;
+	const double tc = kThresholdPerUnit * p.temporal_chroma * mp;
 	const double cc[3] = {cur.r - yc, cur.g - yc, cur.b - yc};
 	const double ch[3] = {hist.r - yh, hist.g - yh, hist.b - yh};
 
@@ -184,6 +186,7 @@ ShaderParams make_shader_params(const Params &p)
 	s.m_cut = (float)cut_threshold(p.cut_sensitivity);
 	s.protect_amount = p.protection ? (float)p.protection_amount : 0.0f;
 	s.cut_enabled = p.cut_reset ? 1.0f : 0.0f;
+	s.profile = make_shader_profile(p.profile);
 	return s;
 }
 
@@ -227,13 +230,15 @@ void temporal_pixel_f(const ShaderParams &s, const float cur[4], const float his
 		cc[i] = cur[i] - yc;
 		ch[i] = hist[i] - yh;
 	}
+	const float mp = profile_multiplier_f(s.profile, 0.5f * (std::fabs(yh) + std::fabs(yc)));
+	const float tl = s.t_luma * mp, tc = s.t_chroma * mp;
 	const float dl = std::fabs(comp_f(yh, s.k) - comp_f(yc, s.k));
 	float dd = 0.0f;
 	for (int i = 0; i < 3; i++)
 		dd += (ch[i] - cc[i]) * (ch[i] - cc[i]);
 	const float dc = std::sqrt(dd) / (0.5f * (std::fabs(yh) + std::fabs(yc)) + s.k) * 1.442695041f;
-	const float wl = s.t_luma > 0.0f ? (float)kBeta * response_f(dl / s.t_luma) * g : 0.0f;
-	const float wc = s.t_chroma > 0.0f ? (float)kBeta * response_f(dc / s.t_chroma) * g : 0.0f;
+	const float wl = tl > 0.0f ? (float)kBeta * response_f(dl / tl) * g : 0.0f;
+	const float wc = tc > 0.0f ? (float)kBeta * response_f(dc / tc) * g : 0.0f;
 	if (wl == 0.0f && wc == 0.0f) {
 		for (int i = 0; i < 4; i++)
 			out[i] = cur[i];

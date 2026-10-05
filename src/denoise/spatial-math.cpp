@@ -35,6 +35,7 @@ void sanitize(SpatialParams &p)
 	cl(p.chroma, 0, 20, 0);
 	cl(p.k_nits, 0.001, 10, 0.1);
 	p.radius = std::clamp(p.radius, 1, kSpatialRadiusMax);
+	sanitize(p.profile);
 }
 
 namespace {
@@ -81,13 +82,15 @@ void spatial_b_pass(const SpatialParams &p, const Image &in, Image &out, bool ve
 	out.w = in.w;
 	out.h = in.h;
 	out.px.resize(in.px.size());
-	const double tl = kThresholdPerUnit * p.luma, tc = kThresholdPerUnit * p.chroma;
+	const double tl0 = kThresholdPerUnit * p.luma, tc0 = kThresholdPerUnit * p.chroma;
 	for (int line = 0; line < line_count(in, vertical); line++) {
 		const Line L{in, vertical, line};
 		const int n = L.size();
 		for (int x = 0; x < n; x++) {
 			const Rgba &ctr = L.at(x);
 			const Yc c0 = split(ctr);
+			const double mp = profile_multiplier(p.profile, std::fabs(c0.y));
+			const double tl = tl0 * mp, tc = tc0 * mp;
 			const double f0 = comp(c0.y, p.k_nits);
 			double sl = 1, sc = 1, yacc = c0.y, cacc[3] = {c0.c[0], c0.c[1], c0.c[2]};
 			double dec = 1;
@@ -141,6 +144,7 @@ SpatialShaderParams make_spatial_shader_params(const SpatialParams &p)
 	s.t_chroma = (float)(kThresholdPerUnit * p.chroma);
 	s.k = (float)p.k_nits;
 	s.radius = p.radius;
+	s.profile = make_shader_profile(p.profile);
 	return s;
 }
 
@@ -178,6 +182,8 @@ void spatial_b_pass_f(const SpatialShaderParams &s, const Image &in, Image &out,
 			const float c0[3] = {(float)ctr.r, (float)ctr.g, (float)ctr.b};
 			const float y0 = luma_f(c0);
 			const float ch0[3] = {c0[0] - y0, c0[1] - y0, c0[2] - y0};
+			const float mp = profile_multiplier_f(s.profile, std::fabs(y0));
+			const float tl = s.t_luma * mp, tc = s.t_chroma * mp;
 			const float f0 = comp_sf(y0, s.k);
 			float sl = 1.0f, sc = 1.0f, yacc = y0;
 			float cacc[3] = {ch0[0], ch0[1], ch0[2]};
@@ -195,15 +201,14 @@ void spatial_b_pass_f(const SpatialShaderParams &s, const Image &in, Image &out,
 					const float yq = luma_f(q);
 					const float cq[3] = {q[0] - yq, q[1] - yq, q[2] - yq};
 					const float wl =
-						s.t_luma > 0.0f
-							? dec * response_sf(std::fabs(comp_sf(yq, s.k) - f0) / s.t_luma)
-							: 0.0f;
+						tl > 0.0f ? dec * response_sf(std::fabs(comp_sf(yq, s.k) - f0) / tl)
+							  : 0.0f;
 					float dd = 0.0f;
 					for (int i = 0; i < 3; i++)
 						dd += (cq[i] - ch0[i]) * (cq[i] - ch0[i]);
 					const float dc = std::sqrt(dd) /
 							 (0.5f * (std::fabs(yq) + std::fabs(y0)) + s.k) * 1.442695041f;
-					const float wc = s.t_chroma > 0.0f ? dec * response_sf(dc / s.t_chroma) : 0.0f;
+					const float wc = tc > 0.0f ? dec * response_sf(dc / tc) : 0.0f;
 					sl = sl + wl;
 					yacc = yacc + wl * yq;
 					sc = sc + wc;
@@ -242,7 +247,7 @@ void spatial_a_pass(const SpatialParams &p, const Image &in, Image &out, bool ve
 	out.w = in.w;
 	out.h = in.h;
 	out.px.resize(in.px.size());
-	const double tl = kThresholdPerUnit * p.luma, tc = kThresholdPerUnit * p.chroma;
+	const double tl0 = kThresholdPerUnit * p.luma, tc0 = kThresholdPerUnit * p.chroma;
 	std::vector<Yc> fw, bw;
 	std::vector<char> fpass, bpass; // the step at i used w = 0 for both luma and chroma
 
@@ -254,6 +259,8 @@ void spatial_a_pass(const SpatialParams &p, const Image &in, Image &out, bool ve
 		st[(size_t)start] = q;
 		for (int i = start + step; i >= 0 && i < n; i += step) {
 			const Yc v = split(L.at(i));
+			const double mp = profile_multiplier(p.profile, 0.5 * (std::fabs(v.y) + std::fabs(q.y)));
+			const double tl = tl0 * mp, tc = tc0 * mp;
 			const double wl =
 				tl > 0 ? kBetaS * response(std::fabs(comp(v.y, p.k_nits) - comp(q.y, p.k_nits)) / tl)
 				       : 0.0;

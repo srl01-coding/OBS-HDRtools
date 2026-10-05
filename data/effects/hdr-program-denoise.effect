@@ -38,6 +38,14 @@ uniform float debug_gain = 16.0;
 uniform float s_t_luma = 0.0;      // spatial thresholds, log2 units (0 = off)
 uniform float s_t_chroma = 0.0;
 uniform float s_radius = 8.0;      // 1..12 taps per side
+// noise profile T(Y) = T * m(Y) (docs/denoise/NOISE_PROFILE.md), mirrored in
+// src/denoise/noise-profile.cpp (profile_multiplier_f). np_count = 0: identity.
+uniform float4 np0 = {0.0, 1.0, 0.0, 1.0}; // (log2 nits, multiplier) anchors 0, 1
+uniform float4 np1 = {0.0, 1.0, 0.0, 1.0}; // anchors 2, 3
+uniform float4 np2 = {0.0, 1.0, 0.0, 1.0}; // anchors 4, 5
+uniform float np_count = 0.0;
+uniform float np_min = 0.5;
+uniform float np_max = 3.0;
 
 struct VertInOut {
 	float4 pos : POSITION;
@@ -62,6 +70,31 @@ float comp(float y)
 {
 	float a = log2(1.0 + abs(y) / knee);
 	return y < 0.0 ? -a : a;
+}
+
+// one segment of the piecewise-linear profile (no local arrays or loops: portable to the
+// OpenGL translation); the last segment whose start lies below l wins
+float profile_seg(float m, float l, float2 a, float2 b, float idx)
+{
+	if (idx + 1.0 < np_count && l > a.x) {
+		float t = clamp((l - a.x) / (b.x - a.x), 0.0, 1.0);
+		return a.y + t * (b.y - a.y);
+	}
+	return m;
+}
+
+float profile_mult(float y)
+{
+	if (np_count < 0.5)
+		return 1.0;
+	float l = log2(max(abs(y), 0.001));
+	float m = np0.y;
+	m = profile_seg(m, l, np0.xy, np0.zw, 0.0);
+	m = profile_seg(m, l, np0.zw, np1.xy, 1.0);
+	m = profile_seg(m, l, np1.xy, np1.zw, 2.0);
+	m = profile_seg(m, l, np1.zw, np2.xy, 3.0);
+	m = profile_seg(m, l, np2.xy, np2.zw, 4.0);
+	return clamp(m, np_min, np_max);
 }
 
 float response(float x)
@@ -169,11 +202,14 @@ float4 PSTemporal(VertInOut vert_in) : TARGET
 	float yh = luma(h);
 	float3 cc = c - float3(yc, yc, yc);
 	float3 ch = h - float3(yh, yh, yh);
+	float mp = profile_mult(0.5 * (abs(yh) + abs(yc)));
+	float tl = t_luma * mp;
+	float tc = t_chroma * mp;
 	float dl = abs(comp(yh) - comp(yc));
 	float3 dv = ch - cc;
 	float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yh) + abs(yc)) + knee) * 1.442695041;
-	float wl = t_luma > 0.0 ? 0.9 * response(dl / t_luma) * g : 0.0;
-	float wc = t_chroma > 0.0 ? 0.9 * response(dc / t_chroma) * g : 0.0;
+	float wl = tl > 0.0 ? 0.9 * response(dl / tl) * g : 0.0;
+	float wc = tc > 0.0 ? 0.9 * response(dc / tc) * g : 0.0;
 	if (wl == 0.0 && wc == 0.0)
 		return cur; // exact identity
 	float yo = yc + wl * (yh - yc);
@@ -189,6 +225,9 @@ float4 spatial_b(int2 p, int2 dir, int n)
 	float3 c0 = ctr.rgb * nits_per_unit;
 	float y0 = luma(c0);
 	float3 ch0 = c0 - float3(y0, y0, y0);
+	float mp = profile_mult(abs(y0));
+	float tl = s_t_luma * mp;
+	float tc = s_t_chroma * mp;
 	float f0 = comp(y0);
 	float sl = 1.0;
 	float sc = 1.0;
@@ -207,10 +246,10 @@ float4 spatial_b(int2 p, int2 dir, int n)
 				float3 q = image.Load(int3(p + dir * o, 0)).rgb * nits_per_unit;
 				float yq = luma(q);
 				float3 cq = q - float3(yq, yq, yq);
-				float wl = s_t_luma > 0.0 ? dec * response(abs(comp(yq) - f0) / s_t_luma) : 0.0;
+				float wl = tl > 0.0 ? dec * response(abs(comp(yq) - f0) / tl) : 0.0;
 				float3 dv = cq - ch0;
 				float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yq) + abs(y0)) + knee) * 1.442695041;
-				float wc = s_t_chroma > 0.0 ? dec * response(dc / s_t_chroma) : 0.0;
+				float wc = tc > 0.0 ? dec * response(dc / tc) : 0.0;
 				sl = sl + wl;
 				yacc = yacc + wl * yq;
 				sc = sc + wc;

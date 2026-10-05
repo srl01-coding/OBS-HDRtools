@@ -1,5 +1,11 @@
 # Measured noise: the 4 Oct 2026 sample clip
 
+> **Superseded for calibration (5 Oct 2026).** The high-bitrate clip analysed by the
+> instructing AI (`HIGH_BITRATE_ANALYSIS.md`, converted in `NOISE_PROFILE.md`) replaces
+> this file for every threshold and noise-model decision. This file remains as the record
+> of what a 20 Mbit/s encode leaves of the noise. Its correlation figures are **spatial**;
+> the high-bitrate analysis reports **temporal** correlation.
+
 Source: `clip_01-29-00_15s_3.mkv`, supplied by the user. It is a church-service shot with
 a locked-off camera, a speaker at a lectern, audience heads in the foreground and a
 slide overlay. The clip itself is **not** in the repository, and no frames or crops of

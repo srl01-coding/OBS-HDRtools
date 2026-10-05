@@ -57,6 +57,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
 #include <util/platform.h>
+#include <graphics/vec4.h>
 
 #include <algorithm>
 #include <atomic>
@@ -101,6 +102,8 @@ struct Settings {
 	SpatialParams sp;
 	bool force_spatial = false; // development: run the spatial passes even at strength 0
 	int compute_variant = compute::VariantTwoCopies;
+	int noise_profile = hdrtk::denoise::ProfileIdentity; // development option (curve not frozen)
+	double noise_profile_max = 3.0;
 	double mix = 1.0;
 	int debug_view = ViewNormal;
 	double debug_gain = 16.0;
@@ -287,7 +290,8 @@ void log_counters(Denoise *d, const char *why)
 	const uint32_t lagged = obs_get_lagged_frames() - d->lagged_frames_at_reset;
 	const uint64_t unique = d->c.unique_frames.load();
 	const uint64_t disp = d->c.dispatches.load();
-	int algo, variant;
+	int algo, variant, profile;
+	double profile_max;
 	SpatialParams sp;
 	bool force_spatial;
 	{
@@ -296,11 +300,16 @@ void log_counters(Denoise *d, const char *why)
 		sp = d->settings.sp;
 		force_spatial = d->settings.force_spatial;
 		variant = d->settings.compute_variant;
+		profile = d->settings.noise_profile;
+		profile_max = d->settings.noise_profile_max;
 	}
-	char detail[160] = "";
+	char detail[200] = "";
 	if (algo == AlgoHqdn3d)
-		snprintf(detail, sizeof(detail), " spatial=B S_L %.2f S_C %.2f R %d%s spatial_passes=%" PRIu64, sp.luma,
-			 sp.chroma, sp.radius, force_spatial ? " (forced)" : "", d->c.spatial_passes.load());
+		snprintf(detail, sizeof(detail),
+			 " spatial=B S_L %.2f S_C %.2f R %d%s spatial_passes=%" PRIu64 " noise_profile=%s (max %.1f)",
+			 sp.luma, sp.chroma, sp.radius, force_spatial ? " (forced)" : "", d->c.spatial_passes.load(),
+			 profile == hdrtk::denoise::ProfileMeasured20261005 ? "measured-2026-10-05" : "identity",
+			 profile_max);
 	else if (algo == AlgoComputeIdentity)
 		snprintf(detail, sizeof(detail), " compute_variant=%s",
 			 variant == compute::VariantOneCopy    ? "one-copy"
@@ -466,6 +475,13 @@ void set_f(gs_effect_t *e, const char *name, float v)
 	gs_effect_set_float(gs_effect_get_param_by_name(e, name), v);
 }
 
+void set_v4(gs_effect_t *e, const char *name, float x, float y, float z, float w)
+{
+	struct vec4 v;
+	vec4_set(&v, x, y, z, w);
+	gs_effect_set_vec4(gs_effect_get_param_by_name(e, name), &v);
+}
+
 void set_v2(gs_effect_t *e, const char *name, float x, float y)
 {
 	struct vec2 v;
@@ -502,6 +518,13 @@ void set_common(Denoise *d, const Frame &f)
 	set_f(e, "s_t_luma", f.ssp.t_luma);
 	set_f(e, "s_t_chroma", f.ssp.t_chroma);
 	set_f(e, "s_radius", (float)f.ssp.radius);
+	const hdrtk::denoise::ShaderProfile &np = f.sp.profile;
+	set_v4(e, "np0", np.a[0][0], np.a[0][1], np.a[1][0], np.a[1][1]);
+	set_v4(e, "np1", np.a[2][0], np.a[2][1], np.a[3][0], np.a[3][1]);
+	set_v4(e, "np2", np.a[4][0], np.a[4][1], np.a[5][0], np.a[5][1]);
+	set_f(e, "np_count", np.count);
+	set_f(e, "np_min", np.min_mult);
+	set_f(e, "np_max", np.max_mult);
 }
 
 // Draw a full-target quad with `tech` into `target` (size w x h).
@@ -845,6 +868,12 @@ void ctl_update(void *, obs_data_t *data)
 	s.sp.k_nits = s.p.k_nits;
 	hdrtk::denoise::sanitize(s.sp);
 	s.force_spatial = obs_data_get_bool(data, "force_spatial");
+	s.noise_profile = (int)obs_data_get_int(data, "noise_profile");
+	if (s.noise_profile < 0 || s.noise_profile >= hdrtk::denoise::ProfileCount)
+		s.noise_profile = hdrtk::denoise::ProfileIdentity;
+	s.noise_profile_max = std::clamp(obs_data_get_double(data, "noise_profile_max"), 1.0, 8.0);
+	s.p.profile = hdrtk::denoise::builtin_profile(s.noise_profile, s.noise_profile_max);
+	s.sp.profile = s.p.profile;
 	s.compute_variant = (int)obs_data_get_int(data, "compute_variant");
 	if (s.compute_variant < compute::VariantTwoCopies || s.compute_variant > compute::VariantDeferred)
 		s.compute_variant = compute::VariantTwoCopies;
@@ -890,6 +919,8 @@ void ctl_defaults(obs_data_t *s)
 	obs_data_set_default_int(s, "spatial_radius", 8);
 	obs_data_set_default_bool(s, "force_spatial", false);
 	obs_data_set_default_int(s, "compute_variant", compute::VariantTwoCopies);
+	obs_data_set_default_int(s, "noise_profile", hdrtk::denoise::ProfileIdentity);
+	obs_data_set_default_double(s, "noise_profile_max", 3.0);
 	obs_data_set_default_double(s, "comparison_knee_nits", 0.1);
 	obs_data_set_default_bool(s, "scene_cut_reset", true);
 	obs_data_set_default_double(s, "cut_sensitivity", 50.0);
@@ -984,6 +1015,12 @@ obs_properties_t *ctl_properties(void *)
 		obs_property_list_add_int(p, name, r);
 	}
 	obs_properties_add_bool(dev, "force_spatial", obs_module_text("Denoise.ForceSpatial"));
+	p = obs_properties_add_list(dev, "noise_profile", obs_module_text("Denoise.NoiseProfile"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Denoise.NoiseProfile.Identity"), hdrtk::denoise::ProfileIdentity);
+	obs_property_list_add_int(p, obs_module_text("Denoise.NoiseProfile.Measured"),
+				  hdrtk::denoise::ProfileMeasured20261005);
+	slider(dev, "noise_profile_max", "Denoise.NoiseProfileMax", 1.0, 8.0, 0.1);
 	if (compute::available()) {
 		p = obs_properties_add_list(dev, "compute_variant", obs_module_text("Denoise.ComputeVariant"),
 					    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);

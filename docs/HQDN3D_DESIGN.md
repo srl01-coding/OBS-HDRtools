@@ -376,3 +376,20 @@ Reading:
   propagation through large flat or correlated-noise areas, and white-noise flat fields
   do not test that. The A/B choice therefore rests on real footage and on the codec test
   (decision sections 15-17), as planned.
+
+## 9. Luminance-dependent threshold (noise profile)
+
+Decision C of `docs/denoise/HIGH_BITRATE_ANALYSIS.md` changes the thresholds of sections
+3 and 8:
+
+```text
+T_L,eff = T_L * m(Y)    T_C,eff = T_C * m(Y)
+```
+
+- **Temporal (section 3):** Y = (|Y_hist| + |Y_cur|) / 2.
+- **Spatial B (8.3):** Y = |Y| of the centre sample.
+- **Spatial A (8.4):** Y = (|Y_p| + |Y_qprev|) / 2.
+
+m(Y) is defined in `docs/denoise/NOISE_PROFILE.md`. The default is the identity profile
+(m = 1 exactly), so sections 3-8 are unchanged unless a profile is selected. The
+curve is a development option and is not frozen.
