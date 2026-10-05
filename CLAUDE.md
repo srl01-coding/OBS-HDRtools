@@ -39,4 +39,9 @@ Denoise P2 per docs/denoise/P2_DECISION_RESPONSE.md (Option D; governs P2): spat
 temporal; strengths default 0), A = CPU reference only, D3D11 compute identity spike implemented
 (d3d11-compute.cpp, Windows-only, 3 isolation variants). Gates SP-*/CS-* NOT RUN. Next: user runs P1 on real
 footage + CS gates; A compute only after the spike passes; no P2 defaults/A-vs-B choice before P1 real footage.
+Denoise P2.5 (docs/denoise/ROADMAP_CORRECTION_MOTION_AWARE.md + P2_5_AMENDMENT.md, amendment wins): NLMeans
+design + CPU refs (nlm-math, candidates (dx,dy,dt), policies A/B/H, tgain), tools/denoise-sim comparison with oracle-flow
+MC (no optical-flow code may be written without authorisation), NVOF capability probe (nvof-probe.cpp, vendored BSD-3
+headers in third_party/nvof). Findings: docs/denoise/MOTION_AWARE_TEMPORAL.md; measured noise: NOISE_MODEL.md (sample
+clip is post-encoder; footage never committed - real people). GPU NLM/NVOF integration waits for CS gates + user.
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

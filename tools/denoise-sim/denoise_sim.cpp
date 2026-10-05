@@ -778,7 +778,46 @@ int main(int argc, char **argv)
 			noise = !strcmp(argv[++i], "white2") ? NoiseWhite2 : NoiseEnc;
 		else if (!strcmp(argv[i], "--quick"))
 			quick = true;
-		else if (!strcmp(argv[i], "--process") && i + 7 < argc) {
+		else if (!strcmp(argv[i], "--export") && i + 2 < argc) {
+			// codec test material: --export DIR KIND   (KIND: object | pan)
+			// writes clean.f32, m<k>.f32 per method (float32 RGB nits, frame after frame)
+			// and methods.txt (index, name, matched S)
+			const std::string dir = argv[i + 1];
+			const bool pan = !strcmp(argv[i + 2], "pan");
+			const int W = 384, H = 256, frames = 60, warm = 12;
+			const Image world = make_world(W + 16 * 40 + 200, H + 60, 11);
+			const Image obj = make_object(96, 5);
+			Runner R{noise, W, H};
+			Fixture st{FixStatic, 0, W, H, 24, world, world, obj};
+			Fixture fx{pan ? FixPan : FixObject, pan ? 1.0 : 2.0, W, H, frames, world, world, obj};
+			fx.obj_size = 96;
+			{
+				FILE *f = fopen((dir + "/clean.f32").c_str(), "wb");
+				for (int t = 0; t < frames; t++)
+					write_frame(f, fx.frame(t).clean);
+				fclose(f);
+			}
+			auto methods = make_methods(false);
+			FILE *list = fopen((dir + "/methods.txt").c_str(), "w");
+			for (size_t k = 0; k < methods.size(); k++) {
+				Method &m = *methods[k];
+				bool reached = true;
+				const double S = m.name == "none" ? 0 : match(R, m, st, 0.5, warm, &reached);
+				fprintf(list, "%zu\t%s\t%.3f\t%d\n", k, m.name.c_str(), S, reached ? 1 : 0);
+				fflush(list);
+				FILE *f = fopen((dir + "/m" + std::to_string(k) + ".f32").c_str(), "wb");
+				m.reset();
+				for (int t = 0; t < frames; t++) {
+					const Frame fr = fx.frame(t);
+					const Image noisy = add_noise(fr.clean, noise, 7919ull * (uint64_t)t + 17);
+					write_frame(f, m.step(noisy, fr, S));
+				}
+				fclose(f);
+				fprintf(stderr, "exported %s\n", m.name.c_str());
+			}
+			fclose(list);
+			return 0;
+		} else if (!strcmp(argv[i], "--process") && i + 7 < argc) {
 			// real footage: METHOD-INDEX S in out W H N
 			const int mi = atoi(argv[i + 1]);
 			const double S = atof(argv[i + 2]);

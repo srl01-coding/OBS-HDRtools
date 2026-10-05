@@ -52,6 +52,10 @@ evidence for every result; never infer a result from a different layer.
 | C31 | `test_spatial.cpp`: B float mirror of SpatialH/SpatialV vs double, R = 6/8/12 | PASS | max rel error 1.4e-5 / 2.5e-5 / 2.9e-5 |
 | C32 | `test_spatial.cpp` synthetic gates (decision section 14), 2 % per-channel Gaussian noise, 18 and 203 nits, strengths solved for sigma_out/sigma_in = 0.70 on luma and on chroma separately; steps 18->203 and 203->1000, rising/falling x vertical/horizontal | PASS | matched S_L / S_C: B R6 3.24/6.28, B R8 3.11/6.02, B R12 2.98/5.75, A 4.85/9.26 (18 nits; 203 nits within 0.1). All four: 10-90 % width increase 0.00 px, overshoot <= 0.22 %, undershoot <= 0.04 % (input noise level), directional width spread 0.00 px. Full table: `docs/HQDN3D_DESIGN.md` 8.6 |
 | C33 | `tools/check-effect-hlsl.py` on `hdr-program-denoise.effect` (eight pixel shaders incl. SpatialH/V and the Exact view); DXC cs_6_0 on the embedded compute identity shader; Windows compile of `d3d11-compute.cpp` and `program-denoise.cpp` (zig, x86_64-windows-gnu) | PASS | pre-flight only; the OBS log and the user's machine are the real gates |
+| C34 | `test_nlm.cpp`: offset-major NLMeans equals the naive reference (18 cases: P 0-2, all three history policies, chroma term on/off, odd sizes); S = 0 exact identity; isolated impulse untouched; constant / black / neutral; convex bounds over all candidates; HDR stress (negative, 12,000 nits) not clamped; cut (g = 0) uses no previous-frame candidate; temporal share capped at 0.9 for policies B/H (cap exercised); spatial mirror symmetry | PASS | 2026-10-05: naive vs offset 1.9e-14; mirror 1e-14 |
+| C35 | `tools/denoise-sim` synthetic premium-temporal comparison (encoded and white noise models; static, moving object 0.5-16 px/frame, disocclusion, pan, cut) | RUN (informative, not a gate) | results and reading: `docs/denoise/MOTION_AWARE_TEMPORAL.md` section 2-3 |
+| C36 | `tools/denoise-sim/real_eval.py` on six crops of the 4 Oct sample clip (second-generation: encoder residue, not camera noise) | RUN (informative) | `docs/denoise/MOTION_AWARE_TEMPORAL.md` section 6 |
+| C37 | `tools/denoise-sim/codec_test.py`: x265 Main10 HLG at 0.07 / 0.035 bpp vs the clean reference | RUN (informative) | `docs/denoise/MOTION_AWARE_TEMPORAL.md` section 6 |
 
 ## Layer 1b - build
 
@@ -217,6 +221,7 @@ with debug view *Normal*, because the compare views add copies.
 | CS4 | HDR Transform + HDR Color on the camera source, compute identity on | grade and transform unchanged versus Off (OBS graphics state not disturbed) | NOT RUN |
 | CS5 | Change canvas resolution, then back; switch variants and algorithms repeatedly | resources recreated (log line each time), no black frame, no crash | NOT RUN |
 | CS6 | Optional: D3D11 debug layer (Graphics Tools + `--debug`-style run) | no D3D11 errors or hazards from the spike | NOT RUN |
+| NV-G0 | Development > *Probe NVIDIA optical-flow hardware* | log lines `[nvof-probe] ...`: max API version, CUDA/D3D11/D3D12 entry points, and per device either `optical-flow engine available; output grids {...}` or `NOT available`; OBS keeps running normally (the probe uses its own CUDA context) | NOT RUN |
 | CS7 | Renderer set to OpenGL (or SDR canvas) | log once: `compute identity unavailable (...): passing the program through`; picture unchanged | NOT RUN |
 
 ## Layer 3 - production path
