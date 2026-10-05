@@ -168,9 +168,19 @@ enc|white2`.
 6. **Darks are not denoised at any matched strength.** Dark-zone error ratios were
    0.98-1.00. With K = 0.1 nit, the *model's* noise at 5 nits (σ_F ≈ 0.06, an
    extrapolation, since nothing below 23 nits was measured) exceeds the thresholds. The
-   real footage's dark piano region (temporal σ_F ≈ 0.08) is likewise left untouched. Raising the
-   comparison knee K (for example to 0.5-1 nit) is a tuning question for P1/P2 on real
-   footage.
+   real footage's dark piano region (temporal σ_F ≈ 0.08) is likewise left untouched.
+   - **Raising K does not fix it.** HQDN3D temporal at S = 6.28 with K = 0.1 / 0.5 / 1 / 2
+     nits gave dark-zone ratios of 0.98 / 0.98 / 0.98 / 0.96 on enc. White noise at S = 4
+     or 6.28 gave 1.00 for every K. K only matters for luminance near or below K.
+   - **The cause is a single threshold for every level.** Relative noise rises towards
+     black (`NOISE_MODEL.md`), so a level-independent T in log2 units is too small in the
+     darks.
+   - **Design option for the instructing AI:** a noise-profile threshold T(Y) = T0 ·
+     σ_rel(Y) / σ_rel(reference). It would apply to HQDN3D, MC and NLMeans alike. It is a
+     behaviour change, so it is not made without a decision.
+   - The same runs show that P1's default luma strength (4) gives a wall ratio of 0.74 on
+     the measured noise, and 0.96 on noise twice as strong. Strength has to follow the
+     real noise level.
 
 ## 4. Real footage (sample clip, CPU, second generation)
 
@@ -291,5 +301,6 @@ Reading:
    pre-encode noise. If that noise is as correlated as the encoded sample, spatial
    filtering cannot reach the static target and gives limited benefit (wall error
    0.61-0.89 in simulation; flat temporal std 0.70-0.80 on the real wall).
-4. **Before choosing P1 defaults,** check faces at the default temporal strength (H6) and
-   test a comparison knee K of 0.5-1 nit for the darks.
+4. **Before choosing P1 defaults,** check faces at the default temporal strength (H6). For
+   the darks, decide on a noise-profile threshold (finding 6); raising K alone does not
+   help.
