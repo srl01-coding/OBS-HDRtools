@@ -4,7 +4,7 @@ Source: `clip_01-29-00_15s_3.mkv`, supplied by the user. It is a church-service 
 a locked-off camera, a speaker at a lectern, audience heads in the foreground and a
 slide overlay. The clip itself is **not** in the repository, and no frames or crops of
 it are either (it shows real people). Only aggregate numbers are recorded here. The
-analysis scripts live outside the repository; their method is described below.
+analysis scripts are in `tools/noise-analysis/`; the method is described below.
 
 ## The file
 
@@ -26,7 +26,7 @@ This file is an encoded output, recorded at 20 Mbit/s. What it contains is camer
 *after* the encoder has quantised it. It is not the noise the denoiser will see at the
 program texture, and two things in the data show this:
 
-- **B frames average 13.7 kB at 4.5K (0.003 bit/pixel).** The encoder codes almost
+- **B frames average 13.7 kB at 4.5K (0.011 bit/pixel).** The encoder codes almost
   nothing in them, so noise in B frames is largely copied or interpolated from the
   reference frames. Frame-to-frame differences on the static wall alternate with the
   P-frame cadence: B-frame row profiles change by about 0.03 codes, P frames by about

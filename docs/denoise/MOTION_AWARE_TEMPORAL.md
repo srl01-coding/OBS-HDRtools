@@ -46,7 +46,8 @@ excluded). They contain:
 
 **Noise models.**
 - **enc**: the measured post-encoder noise (`NOISE_MODEL.md`). It depends on level
-  (about 0.9% at 100-300 nits, 2.3% at 23 nits), is strongly correlated (lag-1 0.84
+  (0.7-0.9% at 100-300 nits, 2.3% at 23 nits; below 23 nits the model is an
+  extrapolation, 4% at 5 nits), is strongly correlated (lag-1 0.84
   horizontal, 0.60 vertical), and chroma is 0.6 of luma.
 - **white2**: white noise at twice that amplitude. It stands in for the unknown
   pre-encode noise.
@@ -70,6 +71,7 @@ enc|white2`.
 | MC, any exact/4x4 oracle flow | 6.3 | **0.50** | 0.79 | 0.52 | 12.3 | 0.50 | 0.80 | 0.53 |
 | MC, 4x4 + 0.3 px flow error | 8.0* | 0.63 | 0.99 | 0.75 | 16* | 0.53 | 0.86 | 0.61 |
 | MC, 4x4 + 0.3 px error + zero-motion candidate | 6.9 | **0.50** | 0.77 | 0.55 | 12.0 | 0.50 | 0.82 | 0.54 |
+| Temporal NLM, t1 only (same position), gain 9 | 1.75 | **0.50** | 0.84 | 0.53 | 2.6 | 0.50 | 0.94 | 0.54 |
 
 ### Moving 64 x 64 textured object (object error ratio; speed in px/frame)
 
@@ -79,6 +81,7 @@ enc|white2`.
 | NLMeans spatial | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
 | Temporal NLM A | 1.03 | 1.01 | 1.01 | 1.07 | 1.05 | 1.05 |
 | Temporal NLM H 5x5 | 0.96 | 0.94 | 0.94 | 0.99 | 0.99 | 0.99 |
+| Temporal NLM B s7 t3 g9 | 0.97 | 0.91 | 1.03 | 1.03 | 1.01 | 1.00 |
 | MC exact flow (bicubic) | 0.77 | 0.68 | 0.70 | **0.66** | 0.75 | 0.91 |
 | MC 4x4 grid | 0.77 | 0.69 | 0.71 | 0.66 | 0.75 | 0.91 |
 | MC 4x4 + 0.3 px error | 0.92 | 0.91 | 0.92 | 0.91 | 0.92 | 0.92 |
@@ -93,14 +96,16 @@ enc|white2`.
 
 ### Disocclusion, pan, cut
 
-- **Disocclusion trail.** This is background uncovered within the last 6 frames. Every
-  method scored ≤ 1.00 (0.92-1.00) at every speed, so none ghosts. The
-  threshold-response rejection handles revealed background without an occlusion
-  detector, and that includes MC.
+- **Disocclusion trail.** This is background uncovered within the last 6 frames.
+  - Every method scored 0.92-1.00 at every speed, with one exception: MC with 0.3 px
+    flow error and no zero-motion candidate scored 1.01 (enc, 0.5-2 px/frame), which is
+    marginal. The zero-motion candidate brings it back to 0.92-0.96.
+  - The threshold-response rejection handles revealed background without an occlusion
+    detector, and that includes MC.
 - **Pan 3 px/frame (enc), wall error.**
   - MC: 0.50, the full static performance.
   - HQDN3D temporal: 0.97.
-  - Temporal NLM: 0.85-0.89.
+  - Temporal NLM: 0.85-0.89 (A, H, B s7 t3); 0.99 for t1-only.
   - Spatial NLM: 0.89.
 - **Pan 0.5 px/frame.**
   - MC: 0.80 on this content. The cause is the fixture's near-Nyquist texture: Lanczos-3
@@ -110,50 +115,60 @@ enc|white2`.
     softer than that. Sub-pixel recursion should therefore not cost real footage much.
     This needs confirming on footage.
 - **Hard cut** (a distinct second scene).
-  - Every temporal method gives an exact identity on the first frame (ratio 1.00).
-  - Spatial-only methods keep filtering spatially (0.94-0.97).
+  - Temporal-only methods (HQDN3D temporal, TNLM t1-only, every MC) give an exact
+    identity on the first frame (1.00).
+  - Methods with a spatial component keep filtering spatially (0.94-0.99).
   - No method mixes in the previous scene.
 
 ## 3. What the comparison says (CPU, synthetic, oracle flow)
 
 1. **For static content, same-coordinate temporal is already the best tool.** MC with
-   zero flow reduces exactly to HQDN3D. Nothing tested beats HQDN3D temporal on static
-   content at equal texture cost.
+   zero flow reduces exactly to HQDN3D. At equal wall error, no tested method is clearly
+   better: the differences are within 0.03, with mixed sign across fabric, text and skin.
 2. **Only motion compensation keeps temporal denoise on moving content.**
-   - Moving objects at 0.5-8 px/frame: MC 0.66-0.77, against 0.94-1.09 for every
-     non-MC method on the measured noise.
-   - A 3 px/frame pan: 0.50 against 0.85-0.97.
-   - The 4x4 grid costs nothing measurable on rigid motion.
+   - Moving objects at 0.5-8 px/frame: MC 0.66-0.77 (bicubic or 4x4; bilinear 0.66-0.81),
+     against 0.91-1.09 for every non-MC method on the measured noise.
+   - A 3 px/frame pan: 0.50 against 0.85-0.99.
+   - The 4x4 grid costs nothing measurable here (≤ 0.01). For rigid translation it is
+     nearly exact by construction, so non-rigid motion (faces, hands) is untested.
+   - **Exception: sub-pixel pans on near-Nyquist content.** At 0.5 px/frame (enc), exact
+     MC (0.80) is worse than HQDN3D (0.76) and TNLM B (0.75). On white noise, spatial NLM
+     (0.49) beats MC (0.76). Section 2 shows this disappears with mild optical softness.
 
    This is the headline result in favour of P2.5B.
 3. **Temporal NLMeans (dt = -1 patch search) did not track motion in a useful way.**
    - With a 7x7 temporal window it averages many approximate matches rather than the one
      true correspondence.
-   - On content whose texture is near the noise level, it blurs that texture before it
-     removes correlated noise. It never reached the static target on the measured noise,
-     and on moving objects it gained at most 6%.
+   - On content whose texture is near the noise level, the search variants (with a
+     spatial or temporal search window) never reached the static target on the measured
+     noise. The error rose again at higher strength, which points to texture blur; the
+     texture-gain metric is not sensitive enough to show it directly.
+   - On moving objects they gained at most 9% (B s7 t3 at 1 px/frame; H ≤ 6%), against
+     23-34% for MC.
    - On white noise it behaves like spatial NLMeans plus extra candidates.
    - A temporal-only, same-position variant ("t1 only, gain 9") reduces to a patch-weighted
      HQDN3D, with no motion benefit.
 
-   On this evidence Temporal NLMeans is not the premium-temporal candidate. That holds
-   unless real pre-encode footage contradicts it (section 5).
+   Its cost was not measured. On this evidence Temporal NLMeans is not the
+   premium-temporal candidate, unless real pre-encode footage contradicts it (section 5).
 4. **Noise correlation decides whether spatial filtering is worth anything.**
-   - On the measured (encoded, correlated) noise, no spatial method could reach a 0.50
-     wall error without destroying texture first (best 0.61-0.89).
+   - On the measured (encoded, correlated) noise, no method with a spatial search could
+     reach a 0.50 wall error at any strength (best 0.61-0.89).
    - On white noise, spatial NLMeans reaches it, and in pans it matches MC (0.49-0.51).
    - The pre-encode noise character (`NOISE_MODEL.md`, requested sample) therefore
      decides the spatial stage. NLMeans should stay a **residual spatial cleaner for moving
      regions** rather than the premium mode.
 5. **Flow error needs a zero-motion fallback.**
    - Random 0.3 px flow error cost static denoise (0.50 -> 0.63).
-   - Keeping the unwarped history as a second candidate restores static (0.50), but
-     costs part of the pan gain (0.67 -> 0.78).
+   - Keeping the unwarped history as a second candidate restores static (0.50). It costs
+     part of the pan gain (0.67 -> 0.78) and slightly worsens moving objects (enc 0.91-0.92
+     -> 0.90-0.95; white2 0.77-0.81 -> 0.79-0.91; codec pan BD-rate -3.1% -> -2.2%).
    - A production MC design should carry both candidates and use flow confidence
      (NVOF cost output) to choose between them.
 6. **Darks are not denoised at any matched strength.** Dark-zone error ratios were
-   0.98-1.00. With K = 0.1 nit, noise at 5 nits is larger in F than the thresholds
-   (σ_F ≈ 0.06), and the real footage's piano region shows the same. Raising the
+   0.98-1.00. With K = 0.1 nit, the *model's* noise at 5 nits (σ_F ≈ 0.06, an
+   extrapolation, since nothing below 23 nits was measured) exceeds the thresholds. The
+   real footage's dark piano region (temporal σ_F ≈ 0.08) is likewise left untouched. Raising the
    comparison knee K (for example to 0.5-1 nit) is a tuning question for P1/P2 on real
    footage.
 
@@ -165,7 +180,8 @@ heads) and the speaker. The strengths were the matched values above.
 
 The clip is a 20 Mbit/s HEVC recording, so its "noise" is largely encoder residue:
 - the temporal component is HEVC block structure, refreshed on P frames;
-- the removed-signal images of the temporal filters show exactly those 8-32 px blocks.
+- the removed-signal images of the temporal filters show those blocks (visual inspection;
+  the images are not kept in the repository).
 
 These results therefore show how the filters treat **encoder artefacts**. They do not
 show camera noise.
@@ -210,17 +226,20 @@ Observations. These are second-generation material, so read them as direction on
 - **The removed signal of the temporal filters on static areas is HEVC block structure.**
   This confirms that the clip's temporal "noise" is encoder residue, refreshed on P
   frames.
-- **On the speaker, HQDN3D temporal at the matched strength (6.3) removes facial
-  structure.** The removed-signal image shows the moving face and shirt (edge/flat 1.24).
-  Slow, low-contrast motion stays below the threshold and is averaged with history. That
-  is the smear motion compensation exists to prevent.
-  - Spatial NLM's removed signal on the same frame is noise-like (0.69).
+- **On the speaker, HQDN3D temporal at the matched strength (6.3) appears to remove facial
+  structure.** This is a visual observation only. The removed-signal image of frame 70
+  shows the outline of the moving face and shirt, while spatial NLM's removed signal on
+  the same frame looks noise-like.
+  - The edge/flat metric (1.24) does not show this on its own: static crops read higher
+    (1.76-1.81).
+  - Plausible cause: slow, low-contrast motion stays below the threshold and is averaged
+    with history. That is the smear motion compensation exists to prevent.
   - P1's default temporal luma strength is 4, not 6.3. The real-footage gate H6 should
     check faces at the default strength.
 - **Darks (piano) are untouched by every method.** This is finding 6 in section 3: at
   K = 0.1 nit, dark noise exceeds the thresholds.
-- **Bit savings are small (0-3%)** except on the flat wall (5-14%). The encoder in the
-  original recording has already removed most noise.
+- **Size changes are small (-2.9% to +1.0%)** except on the flat wall (-5% to -14%). The
+  encoder in the original recording has already removed most noise.
 
 ### 6.2 Same-quality codec test against a clean reference (decision section 17)
 
@@ -244,11 +263,13 @@ Observations. These are second-generation material, so read them as direction on
 
 Reading:
 - **MC is the only method that is good in both sequences.** HQDN3D temporal is the best
-  on a mostly static scene, and harmful in a pan at the same strength.
-- **The real filters capture a quarter to a third of the available gain.** Perfect
-  denoising would save 11-17% here, and they save 3-4%.
+  on a mostly static scene and harmful in the pan at its matched strength. Note that the
+  two sequences also differ in noise model and strength (S 6.2 against 12.3).
+- **The best filter per sequence captures about a fifth to two-fifths of the available
+  gain** (21-38%). Perfect denoising would save 11-17%; the best real filter saves
+  3.5-4.1%; the others range from -2.8% to +3.4%.
 - **Scale caveat.** The noise levels here are small next to the coding error (pre-encode
-  PSNR 54 dB). Real 4K camera noise before encoding (requested sample) is likely larger,
+  PSNR 48.6-54.4 dB). Real 4K camera noise before encoding (requested sample) is likely larger,
   and so is the available gain.
 - **Limits of the test.** Small frames, procedural content, x265 and PSNR stand in for
   YouTube's own transcode and a viewer. This is directional evidence for the decision
@@ -262,11 +283,13 @@ Reading:
      metric against the warped history, a zero-motion candidate, and flow cost used to
      pick between the candidates.
    - The 4x4 grid was not a limitation on rigid motion in these tests.
-2. **Do not build a GPU Temporal NLMeans prototype on this evidence.** It showed no motion
-   benefit over spatial NLMeans at a higher cost. Revisit only if the pre-encode sample
-   shows near-white noise *and* no NVOFA is available.
+2. **Do not build a GPU Temporal NLMeans prototype on this evidence.** Its motion benefit
+   over spatial NLMeans was small (≤ 9% on the measured noise, none on white noise) and
+   far short of MC; its cost was not measured. Revisit only if the pre-encode sample shows
+   near-white noise *and* no NVOFA is available.
 3. **Keep spatial NLMeans as the residual cleaner for moving regions**, sized by the
    pre-encode noise. If that noise is as correlated as the encoded sample, spatial
-   filtering of any kind is of little value.
+   filtering cannot reach the static target and gives limited benefit (wall error
+   0.61-0.89 in simulation; flat temporal std 0.70-0.80 on the real wall).
 4. **Before choosing P1 defaults,** check faces at the default temporal strength (H6) and
    test a comparison knee K of 0.5-1 nit for the darks.
