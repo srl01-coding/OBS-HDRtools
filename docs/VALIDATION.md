@@ -63,7 +63,7 @@ evidence for every result; never infer a result from a different layer.
 | ID | Test | Status | Evidence |
 |---|---|---|---|
 | B1 | Sources compile against OBS 32.2.2 headers (`g++ -fsyntax-only -Wall -Wextra`) | PASS | no diagnostics (re-run 2026-10-04 with denoise P2 sources) |
-| B2 | CI Windows x64 build (OBS 31.1.1 SDK) | PASS | denoise P2.5 prep (NVOF probe, NLM references): run 37247021354, commit a01413aa2, artifact `obs-hdr-toolkit-0.1.0-windows-x64-a01413aa2` (earlier: 37207465595, 37203845024, 37202766610, 37193906411, 37192864726, 37168988698, 37168271759, 37166894772, 37165577267) |
+| B2 | CI Windows x64 build (OBS 31.1.1 SDK) | PASS | denoise noise profile T(Y): run 37253078785, commit 294c572a5, artifact `obs-hdr-toolkit-0.1.0-windows-x64-294c572a5` (earlier: 37247021354, 37207465595, 37203845024, 37202766610, 37193906411, 37192864726, 37168988698, 37168271759, 37166894772, 37165577267) |
 | B3 | CI macOS / Ubuntu builds, clang-format 19 + gersemi checks | PASS | same run; builds are not a macOS/Linux support claim (nothing run there) |
 
 ## Layer 2 - OBS / GPU (requires the user's machine)
