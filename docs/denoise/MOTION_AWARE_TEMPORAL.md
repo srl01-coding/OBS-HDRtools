@@ -319,3 +319,68 @@ Reading:
 4. **Before choosing P1 defaults,** check faces at the default temporal strength (H6). For
    the darks, decide on a noise-profile threshold (finding 6); raising K alone does not
    help.
+
+## 7. Repeat with the high-bitrate noise model and the noise profile (5 Oct)
+
+These runs use `denoise_sim --noise hb [--profile measured]`. The **hb** model is the
+high-bitrate clip's luma noise converted to linear light (`NOISE_PROFILE.md`):
+- 5.1% at 2.3 nits, 1.4% at 36 nits, 1.1% at 64 nits, 0.9% at 89 nits;
+- chroma 0.6 of luma;
+- **spatially white**, because its spatial correlation has not been measured.
+
+The fixtures and matching are as in section 2: S is set so the wall error is 0.50.
+The synthetic wall is 140 nits, where the measured profile gives m = 0.84. Matching
+therefore raises S under the profile (HQDN3D 6.44 -> 7.69), which also lifts fabric and
+text a little. The dark-band column is the direct test of the profile.
+
+### Static scene (error ratio)
+
+| Method | Profile | S | Wall | Fabric | Text | Skin | Dark (5 nits) |
+|---|---|---|---|---|---|---|---|
+| HQDN3D temporal (= MC with any exact or 4x4 flow) | identity | 6.44 | 0.50 | 0.62 | 0.68 | 0.50 | **0.98** |
+| HQDN3D temporal (= MC with any exact or 4x4 flow) | measured, max 3 | 7.69 | 0.50 | 0.50 | 0.50 | 0.50 | **0.61** |
+| HQDN3D spatial + temporal | identity | 4.0* | 0.51 | 0.89 | 0.59 | 0.68 | 0.99 |
+| HQDN3D spatial + temporal | measured | 5.0* | 0.51 | 0.80 | 0.33 | 0.66 | 0.62 |
+| NLMeans spatial 3x3/7x7 | identity | 1.5* | 0.63 | 1.00 | 0.72 | 0.70 | 1.00 |
+| NLMeans spatial 3x3/7x7 | measured | 2.0* | 0.64 | 0.98 | 0.61 | 0.66 | 0.74 |
+| Temporal NLM A | identity | 1.5* | 0.60 | 0.92 | 0.66 | 0.62 | 1.00 |
+| MC 4x4 + 0.3 px error + zero-motion candidate | identity | 6.72 | 0.50 | 0.62 | 0.66 | 0.52 | 0.98 |
+| MC 4x4 + 0.3 px error + zero-motion candidate | measured | 8.0 | 0.50 | 0.52 | 0.48 | 0.52 | 0.59 |
+
+### Moving object (object error ratio, 0.5-8 px/frame) and other fixtures, identity profile
+
+| Method | Object 0.5-8 | Pan 3 | Pan 0.5 | Worst trail |
+|---|---|---|---|---|
+| HQDN3D temporal | 1.03-1.15 | 0.96 | 0.74 | 0.92 |
+| NLMeans spatial | 0.94-0.95 | 0.64 | 0.62 | 1.00 |
+| Temporal NLM A | 0.86-0.94 | 0.61 | 0.59 | 0.98 |
+| Temporal NLM B s7 t3 g9 | 0.82-0.99 | 0.75 | 0.58 | 0.98 |
+| MC exact or 4x4 oracle | 0.57-0.77 | **0.50** | 0.76-0.79 | 0.93 |
+| MC 4x4 + 0.3 px error + zero-motion | 0.91-0.94 | 0.70 | 0.66 | 0.93 |
+
+With the measured profile:
+- MC exact or 4x4 improves to 0.49-0.74 on the moving object.
+- HQDN3D temporal stays at 1.01-1.13.
+- Every trail stays at or below 0.93, with one exception: **MC with 0.3 px flow error and
+  no zero-motion candidate reaches 1.10 at 0.5 px/frame**. A larger threshold accepts
+  wrongly warped history more readily. With the zero-motion candidate it is 0.76. The
+  history-hypothesis selection is not optional once T(Y) is raised.
+
+### Reading
+
+1. **The profile works as intended on the darks.** With the profile, the dark band goes
+   from untouched (0.98) to 0.61 for HQDN3D temporal and MC, with no ghosting in the
+   static or trail fixtures. Whether 0.61 is too much for real low-light structure is the
+   OBS test NP2. The curve stays unfrozen.
+2. **With temporally white noise, spatial methods matter again in motion.**
+   - NLMeans and Temporal NLM A reach 0.59-0.64 in pans, and 0.86-0.95 on moving objects
+     where HQDN3D temporal makes things slightly worse (1.03-1.15).
+   - MC still leads on moving objects (0.57-0.77) and integer pans (0.50).
+   - This revises finding 4. It supports the instructing AI's order: temporal first,
+     then light residual spatial cleanup in moving regions.
+3. **HQDN3D temporal error on moving objects is slightly above the input noise
+   (1.03-1.15).** This is a mild smear. Motion compensation, or reduced temporal weight
+   where motion is detected, removes it. It is the synthetic counterpart of the speaker
+   observation in section 6.1.
+4. Every conclusion about NVOFA rests on oracle flow. The real flow quality question
+   (NV-G0, then the integration, then motion footage) is unchanged.
