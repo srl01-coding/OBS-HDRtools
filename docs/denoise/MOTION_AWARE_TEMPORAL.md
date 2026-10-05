@@ -349,14 +349,14 @@ text a little. The dark-band column is the direct test of the profile.
 
 ### Moving object (object error ratio, 0.5-8 px/frame) and other fixtures, identity profile
 
-| Method | Object 0.5-8 | Pan 3 | Pan 0.5 | Worst trail |
+| Method | Object 0.5-8 | Pan 3 | Pan 0.5 | Worst trail (0.5-16) |
 |---|---|---|---|---|
-| HQDN3D temporal | 1.03-1.15 | 0.96 | 0.74 | 0.92 |
+| HQDN3D temporal | 1.03-1.15 | 0.96 | 0.74 | 0.96 |
 | NLMeans spatial | 0.94-0.95 | 0.64 | 0.62 | 1.00 |
 | Temporal NLM A | 0.86-0.94 | 0.61 | 0.59 | 0.98 |
 | Temporal NLM B s7 t3 g9 | 0.82-0.99 | 0.75 | 0.58 | 0.98 |
-| MC exact or 4x4 oracle | 0.57-0.77 | **0.50** | 0.76-0.79 | 0.93 |
-| MC 4x4 + 0.3 px error + zero-motion | 0.91-0.94 | 0.70 | 0.66 | 0.93 |
+| MC exact or 4x4 oracle | 0.57-0.77 | **0.50** | 0.75-0.79 | 0.96 |
+| MC 4x4 + 0.3 px error + zero-motion | 0.91-0.94 | 0.70 | 0.66 | 0.96 |
 
 With the measured profile:
 - MC exact or 4x4 improves to 0.49-0.74 on the moving object.
