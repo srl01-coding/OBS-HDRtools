@@ -585,6 +585,7 @@ bool Core::process(gs_texture_t *input, gs_texture_t *output, enum gs_color_spac
 	f.e = e;
 
 	gs_texture_t *m_next = metric_[mi_ ^ 1];
+	const bool skipped = !s.temporal_passes();
 	{
 		StateGuard guard;
 		gs_texture_t *hist = hist_[hi_];
@@ -603,42 +604,61 @@ bool Core::process(gs_texture_t *input, gs_texture_t *output, enum gs_color_spac
 			src = sp_out_;
 			spatial_passes++;
 		}
-		if (!f.reset) {
+		if (skipped) {
+			// spatial only: no metric, no temporal pass; Output takes the spatial result
+			// directly. The history is not maintained, so it restarts when temporal is set.
+			set_common(f, width_, height_);
+			set_tex(e, "image", in);
+			set_tex(e, "filt_tex", src);
+			set_tex(e, "hist_tex", hist);
+			set_tex(e, "src_tex", src);
+			set_tex(e, "metric_tex", m_prev);
+			run_pass(output, space, "Output");
+		} else {
+			if (!f.reset) {
+				set_common(f, width_, height_);
+				set_tex(e, "image", src);
+				set_tex(e, "hist_tex", hist);
+				run_pass(l1_, space, "MetricBlocks");
+
+				set_common(f, width_, height_);
+				set_tex(e, "image", l1_);
+				set_v2(e, "in_size", (float)gs_texture_get_width(l1_),
+				       (float)gs_texture_get_height(l1_));
+				run_pass(l2_, space, "MetricReduce");
+			}
+			set_common(f, width_, height_);
+			set_tex(e, "image", l2_);
+			set_tex(e, "prev_metric_tex", m_prev);
+			set_v2(e, "in_size", (float)gs_texture_get_width(l2_), (float)gs_texture_get_height(l2_));
+			run_pass(m_next, space, "MetricFinal");
+
 			set_common(f, width_, height_);
 			set_tex(e, "image", src);
 			set_tex(e, "hist_tex", hist);
-			run_pass(l1_, space, "MetricBlocks");
+			set_tex(e, "metric_tex", m_next);
+			run_pass(hist_next, space, "Temporal");
 
 			set_common(f, width_, height_);
-			set_tex(e, "image", l1_);
-			set_v2(e, "in_size", (float)gs_texture_get_width(l1_), (float)gs_texture_get_height(l1_));
-			run_pass(l2_, space, "MetricReduce");
+			set_tex(e, "image", in);
+			set_tex(e, "filt_tex", hist_next);
+			set_tex(e, "hist_tex", hist);
+			set_tex(e, "src_tex", src);
+			set_tex(e, "metric_tex", m_next);
+			run_pass(output, space, "Output");
 		}
-		set_common(f, width_, height_);
-		set_tex(e, "image", l2_);
-		set_tex(e, "prev_metric_tex", m_prev);
-		set_v2(e, "in_size", (float)gs_texture_get_width(l2_), (float)gs_texture_get_height(l2_));
-		run_pass(m_next, space, "MetricFinal");
-
-		set_common(f, width_, height_);
-		set_tex(e, "image", src);
-		set_tex(e, "hist_tex", hist);
-		set_tex(e, "metric_tex", m_next);
-		run_pass(hist_next, space, "Temporal");
-
-		set_common(f, width_, height_);
-		set_tex(e, "image", in);
-		set_tex(e, "filt_tex", hist_next);
-		set_tex(e, "hist_tex", hist);
-		set_tex(e, "src_tex", src);
-		set_tex(e, "metric_tex", m_next);
-		run_pass(output, space, "Output");
+	}
+	history_updates++;
+	if (skipped) {
+		telemetry_end(tel, slot, s.log_counters, nullptr);
+		temporal_skipped++;
+		history_valid_ = false;
+		return true;
 	}
 	telemetry_end(tel, slot, s.log_counters, m_next);
 
 	hi_ ^= 1;
 	mi_ ^= 1;
-	history_updates++;
 	if (f.reset)
 		history_resets++;
 	history_valid_ = true;

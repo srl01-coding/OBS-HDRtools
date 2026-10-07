@@ -175,15 +175,15 @@ void log_counters(DenoiseFilter *f, const dn::CoreSettings &s, const char *why)
 	obs_log(LOG_INFO,
 		"[denoise:%s] %s: T_L %.2f T_C %.2f S_L %.2f S_C %.2f%s noise_profile=%s | renders=%" PRIu64
 		" unique_frames=%" PRIu64 " reused_same_frame=%" PRIu64 " dispatches=%" PRIu64
-		" history_updates=%" PRIu64 " history_resets=%" PRIu64 " continuity_resets=%" PRIu64
-		" cut_resets=%" PRIu64 " passthrough=%" PRIu64 " failures=%" PRIu64
+		" history_updates=%" PRIu64 " history_resets=%" PRIu64 " temporal_skipped=%" PRIu64
+		" continuity_resets=%" PRIu64 " cut_resets=%" PRIu64 " passthrough=%" PRIu64 " failures=%" PRIu64
 		" | %ux%u | %s | %s | VRAM about %.0f MiB | %s",
 		obs_source_get_name(f->context), why, s.p.temporal_luma, s.p.temporal_chroma, s.sp.luma, s.sp.chroma,
 		s.force_spatial ? " (forced spatial)" : "",
 		s.noise_profile == dn::ProfileMeasured20261005 ? "measured-2026-10-05" : "identity", f->renders,
 		f->unique_frames, f->reused, f->dispatches, f->core.history_updates, f->core.history_resets,
-		f->continuity_resets, f->core.cut_resets, f->passthrough, f->failures, f->core.width(),
-		f->core.height(), timing.c_str(), metric.c_str(), f->core.vram_mib(), verdict);
+		f->core.temporal_skipped, f->continuity_resets, f->core.cut_resets, f->passthrough, f->failures,
+		f->core.width(), f->core.height(), timing.c_str(), metric.c_str(), f->core.vram_mib(), verdict);
 }
 
 // Draw `tex` into the current target the way libobs draws a filter result
@@ -256,7 +256,8 @@ void filter_render(void *data, gs_effect_t *)
 	if (f->reset_counters.exchange(false)) {
 		f->renders = f->unique_frames = f->reused = f->dispatches = f->continuity_resets = f->failures =
 			f->passthrough = 0;
-		f->core.history_updates = f->core.history_resets = f->core.cut_resets = f->core.spatial_passes = 0;
+		f->core.history_updates = f->core.history_resets = f->core.cut_resets = f->core.spatial_passes =
+			f->core.temporal_skipped = 0;
 		f->core.tel.ms.clear();
 	}
 

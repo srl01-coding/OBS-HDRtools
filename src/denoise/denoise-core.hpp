@@ -65,6 +65,14 @@ struct CoreSettings {
 	bool log_counters = false;
 
 	bool spatial_on() const { return sp.luma > 0 || sp.chroma > 0 || force_spatial; }
+	// The metric + temporal passes are needed: temporal strength set, a view that shows
+	// temporal state, or the development forced-pass mode (identity coverage). Otherwise
+	// (e.g. the hybrid's spatial-only program instance) they are skipped.
+	bool temporal_passes() const
+	{
+		return p.temporal_luma > 0 || p.temporal_chroma > 0 || force_spatial || debug_view == ViewHistory ||
+		       debug_view == ViewMetric || debug_view == ViewWeight;
+	}
 	// all strengths zero, no forced passes, no debug view: the frame would pass unchanged
 	bool neutral() const
 	{
@@ -132,7 +140,9 @@ public:
 	void collect_telemetry(const CoreSettings &s);
 
 	// counters (graphics thread writes, logging reads)
-	uint64_t history_updates = 0, history_resets = 0, spatial_passes = 0, cut_resets = 0;
+	// history_updates counts processed frames (one per dispatch); temporal_skipped counts
+	// those processed without the metric/temporal passes.
+	uint64_t history_updates = 0, history_resets = 0, spatial_passes = 0, cut_resets = 0, temporal_skipped = 0;
 	Telemetry tel;
 	uint32_t width() const { return width_; }
 	uint32_t height() const { return height_; }

@@ -156,13 +156,14 @@ void log_counters(Denoise *d, const char *why)
 		s = d->settings;
 	}
 	const int algo = s.algorithm;
-	char detail[240] = "";
+	char detail[320] = "";
 	if (algo == AlgoHqdn3d)
 		snprintf(detail, sizeof(detail),
 			 " T_L %.2f T_C %.2f spatial S_L %.2f S_C %.2f R %d%s spatial_passes=%" PRIu64
-			 " noise_profile=%s (max %.1f)",
+			 " temporal_skipped=%" PRIu64 " noise_profile=%s (max %.1f)",
 			 s.core.p.temporal_luma, s.core.p.temporal_chroma, s.core.sp.luma, s.core.sp.chroma,
 			 s.core.sp.radius, s.core.force_spatial ? " (forced)" : "", d->core.spatial_passes,
+			 d->core.temporal_skipped,
 			 s.core.noise_profile == dn::ProfileMeasured20261005 ? "measured-2026-10-05" : "identity",
 			 s.core.noise_profile_max);
 	else if (algo == AlgoComputeIdentity)
@@ -201,6 +202,7 @@ void reset_counters_now(Denoise *d)
 	d->core.history_resets = 0;
 	d->core.cut_resets = 0;
 	d->core.spatial_passes = 0;
+	d->core.temporal_skipped = 0;
 	d->core.tel.ms.clear();
 	d->total_frames_at_reset = obs_get_total_frames();
 	d->lagged_frames_at_reset = obs_get_lagged_frames();

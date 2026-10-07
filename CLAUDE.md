@@ -52,5 +52,6 @@ HQ response = MC confidence; E spatial NLM lower priority. Next motion sample = 
 (shared core + settings model + telemetry + shared effect) with two front-ends: denoise-filter.cpp ("HDR Denoise",
 hdr_toolkit_denoise_filter_v1, per-frame dedupe, continuity reset >2.5 frame intervals, protection default off) and
 program-denoise.cpp. Never duplicate algorithm code between front-ends. Gates PL-* NOT RUN. Debug gain up to 1024;
-Temporal weight debug view.
+Temporal weight debug view. 7 Oct: STRENGTH_SCALES.md (equal S is not equal strength; temporal
+needs S 6-8 on measured noise); spatial-only skips metric/temporal passes (temporal_skipped, PL-G8).
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.
