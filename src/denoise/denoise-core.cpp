@@ -111,7 +111,7 @@ obs_properties_t *core_properties(obs_properties_t *props, Placement placement, 
 				obs_module_text(placement == PlacementProgram ? "Denoise.TransitionProtection"
 									      : "Denoise.ChangeProtection"));
 	slider(hq, "protection_amount", "Denoise.ProtectionAmount", 0.0, 1.0, 0.01);
-	slider(hq, "comparison_knee_nits", "Denoise.Knee", 0.01, 20.0, 0.01);
+	slider(hq, "comparison_knee_nits", "Denoise.Knee", kKneeMin, kKneeMax, 0.01);
 	obs_properties_add_group(props, "hqdn3d", obs_module_text("Denoise.Hqdn3d"), OBS_GROUP_NORMAL, hq);
 
 	obs_properties_t *dbg = obs_properties_create();
@@ -410,6 +410,24 @@ void Core::free_all()
 	history_valid_ = false;
 	width_ = height_ = 0;
 	format_ = GS_UNKNOWN;
+}
+
+bool sample_grid(gs_texture_t *input, gs_texture_t *grid, int step, enum gs_color_space space)
+{
+	gs_effect_t *e = core_effect();
+	if (!e || !input || !grid || step < 1)
+		return false;
+	StateGuard guard;
+	const uint32_t w = gs_texture_get_width(grid), h = gs_texture_get_height(grid);
+	set_tex(e, "image", input);
+	set_f(e, "grid_step", (float)step);
+	set_v2(e, "out_size", (float)w, (float)h);
+	gs_set_render_target_with_color_space(grid, nullptr, space);
+	gs_set_viewport(0, 0, (int)w, (int)h);
+	gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
+	while (gs_effect_loop(e, "SampleGrid"))
+		gs_draw_sprite(nullptr, 0, w, h);
+	return true;
 }
 
 double Core::vram_mib() const

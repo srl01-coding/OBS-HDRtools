@@ -34,6 +34,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  */
 
 #include "denoise-core.hpp"
+#include "noise-meter.hpp"
 
 #include "shared/obs-color-context.hpp"
 
@@ -42,7 +43,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <util/platform.h>
 #include <graphics/vec4.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cinttypes>
 #include <cstdio>
 #include <mutex>
@@ -67,6 +70,7 @@ struct DenoiseFilter {
 
 	// graphics thread only
 	dn::Core core;
+	dn::NoiseMeter meter;
 	gs_texrender_t *input = nullptr;
 	enum gs_color_format input_format = GS_UNKNOWN;
 	bool have_ctx = false;
@@ -80,11 +84,12 @@ struct DenoiseFilter {
 
 	// counters
 	uint64_t renders = 0, unique_frames = 0, reused = 0, dispatches = 0, continuity_resets = 0, failures = 0,
-		 passthrough = 0;
+		 passthrough = 0, measure_only = 0;
 
 	explicit DenoiseFilter(obs_source_t *src)
 		: context(src),
-		  core(std::string("[denoise:") + obs_source_get_name(src) + "]")
+		  core(std::string("[denoise:") + obs_source_get_name(src) + "]"),
+		  meter(std::string("[denoise:") + obs_source_get_name(src) + "]")
 	{
 	}
 };
@@ -122,6 +127,7 @@ void filter_destroy(void *data)
 	auto *f = static_cast<DenoiseFilter *>(data);
 	obs_enter_graphics();
 	f->core.free_all();
+	f->meter.free();
 	gs_texrender_destroy(f->input);
 	obs_leave_graphics();
 	delete f;
@@ -144,6 +150,44 @@ bool log_now_clicked(obs_properties_t *, obs_property_t *, void *data)
 	return false;
 }
 
+bool measure_clicked(obs_properties_t *, obs_property_t *, void *data)
+{
+	static_cast<DenoiseFilter *>(data)->meter.request();
+	return false;
+}
+
+// Applies the measured noise floor: comparison knee = fitted K (clamped to the UI range)
+// and the identity noise profile (the measured T(Y) profile assumes K = 0.1 and would
+// compensate the darks twice).
+bool apply_measured_clicked(obs_properties_t *, obs_property_t *, void *data)
+{
+	auto *f = static_cast<DenoiseFilter *>(data);
+	double k = 0;
+	if (!f->meter.result(&k))
+		return false;
+	k = std::clamp(k, dn::kKneeMin, dn::kKneeMax);
+	obs_data_t *s = obs_source_get_settings(f->context);
+	obs_data_set_double(s, "comparison_knee_nits", std::round(k * 100.0) / 100.0);
+	obs_data_set_int(s, "noise_profile", dn::ProfileIdentity);
+	obs_source_update(f->context, s);
+	obs_data_release(s);
+	obs_log(LOG_INFO,
+		"[denoise:%s] applied measured noise floor: comparison knee %.2f nits, identity noise profile",
+		obs_source_get_name(f->context), k);
+	return true;
+}
+
+void refresh_properties_task(void *param)
+{
+	obs_weak_source_t *weak = static_cast<obs_weak_source_t *>(param);
+	obs_source_t *src = obs_weak_source_get_source(weak);
+	if (src) {
+		obs_source_update_properties(src);
+		obs_source_release(src);
+	}
+	obs_weak_source_release(weak);
+}
+
 bool reset_counters_clicked(obs_properties_t *, obs_property_t *, void *data)
 {
 	static_cast<DenoiseFilter *>(data)->reset_counters = true;
@@ -156,6 +200,22 @@ obs_properties_t *filter_properties(void *data)
 	obs_properties_add_text(props, "info", obs_module_text("DenoiseFilter.Info"), OBS_TEXT_INFO);
 	obs_properties_add_button2(props, "reset_history", obs_module_text("Denoise.ResetHistory"),
 				   reset_history_clicked, data);
+
+	auto *f = static_cast<DenoiseFilter *>(data);
+	obs_properties_t *nm = obs_properties_create();
+	const std::string res = f ? f->meter.summary() : std::string();
+	obs_properties_add_text(nm, "noise_measure_info", obs_module_text("DenoiseFilter.Measure.Info"), OBS_TEXT_INFO);
+	obs_properties_add_text(nm, "noise_measure_result",
+				res.empty() ? obs_module_text("DenoiseFilter.Measure.None") : res.c_str(),
+				OBS_TEXT_INFO);
+	obs_properties_add_button2(nm, "noise_measure", obs_module_text("DenoiseFilter.Measure.Start"), measure_clicked,
+				   data);
+	obs_property_t *apply = obs_properties_add_button2(nm, "noise_measure_apply",
+							   obs_module_text("DenoiseFilter.Measure.Apply"),
+							   apply_measured_clicked, data);
+	obs_property_set_enabled(apply, f && f->meter.result(nullptr));
+	obs_properties_add_group(props, "noise_measure_group", obs_module_text("DenoiseFilter.Measure.Group"),
+				 OBS_GROUP_NORMAL, nm);
 	obs_properties_t *dbg = nullptr;
 	dn::core_properties(props, dn::PlacementSource, &dbg);
 	obs_properties_add_button2(dbg, "log_now", obs_module_text("Denoise.LogNow"), log_now_clicked, data);
@@ -168,8 +228,9 @@ void log_counters(DenoiseFilter *f, const dn::CoreSettings &s, const char *why)
 {
 	const std::string timing = dn::timing_summary(f->core.tel);
 	const std::string metric = dn::metric_summary(f->core.tel);
-	const char *verdict = f->dispatches == f->unique_frames ? "dispatches == unique frames: OK"
-								: "MISMATCH dispatches != unique frames";
+	const char *verdict = f->dispatches + f->measure_only == f->unique_frames
+				      ? "dispatches (+ measurement-only frames) == unique frames: OK"
+				      : "MISMATCH dispatches != unique frames";
 	if (f->core.history_updates != f->dispatches)
 		verdict = "MISMATCH history_updates != dispatches";
 	obs_log(LOG_INFO,
@@ -255,7 +316,7 @@ void filter_render(void *data, gs_effect_t *)
 	}
 	if (f->reset_counters.exchange(false)) {
 		f->renders = f->unique_frames = f->reused = f->dispatches = f->continuity_resets = f->failures =
-			f->passthrough = 0;
+			f->passthrough = f->measure_only = 0;
 		f->core.history_updates = f->core.history_resets = f->core.cut_resets = f->core.spatial_passes =
 			f->core.temporal_skipped = 0;
 		f->core.tel.ms.clear();
@@ -279,7 +340,8 @@ void filter_render(void *data, gs_effect_t *)
 
 	// Neutral settings: draw the input unchanged without any pass. Identity through
 	// the shaders is proven with Development > "Run spatial passes at strength 0".
-	if (!ctx.width || !ctx.height || s.neutral()) {
+	const bool measuring = f->meter.active();
+	if (!ctx.width || !ctx.height || (s.neutral() && !measuring)) {
 		f->passthrough++;
 		f->out_valid = false;
 		f->have_time = false;
@@ -306,6 +368,22 @@ void filter_render(void *data, gs_effect_t *)
 	f->unique_frames++;
 
 	gs_texture_t *in = capture_input(f, ctx);
+	if (in && measuring) {
+		obs_source_t *src = f->context;
+		f->meter.sample(in, ctx.input_space, [src]() {
+			// refresh the properties panel (result text, Apply button) on the UI thread
+			obs_queue_task(OBS_TASK_UI, refresh_properties_task, obs_source_get_weak_source(src), false);
+		});
+	}
+	if (in && s.neutral()) {
+		// measuring with neutral settings: the input is drawn unchanged
+		f->measure_only++;
+		f->core.invalidate();
+		f->out_valid = true;
+		f->last_out = in;
+		draw_result(in);
+		return;
+	}
 	if (!in || !f->core.process(in, nullptr, ctx.input_space, s)) {
 		f->failures++;
 		f->out_valid = false;

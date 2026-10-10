@@ -33,7 +33,7 @@ void sanitize(SpatialParams &p)
 	};
 	cl(p.luma, 0, kStrengthMax, 0);
 	cl(p.chroma, 0, kStrengthMax, 0);
-	cl(p.k_nits, 0.001, 20, 0.1);
+	cl(p.k_nits, 0.001, 50, 0.1);
 	p.radius = std::clamp(p.radius, 1, kSpatialRadiusMax);
 	sanitize(p.profile);
 }

@@ -58,4 +58,6 @@ needs S 6-8 on measured noise); spatial-only skips metric/temporal passes (tempo
 noise-normalised removal view; do not combine K~8 with the measured profile (KN-1).
 10 Oct (user): strengths 0-100 (0-20 unchanged); T linear; temporal beta cap 0.9 -> 0.99 above S 20
 (history_beta, RGBA32F history above 20); SR-1.
+10 Oct (user): live noise measurement in HDR Denoise (noise-meter*.cpp, SampleGrid, NOISE_MEASUREMENT.md);
+Apply sets knee + identity profile; knee range 0.01-50; label "Noise floor (comparison knee)"; NM-1.
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

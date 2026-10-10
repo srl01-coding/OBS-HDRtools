@@ -57,6 +57,10 @@ target_sources(
     src/denoise/denoise-filter.cpp
     src/denoise/hqdn3d-math.cpp
     src/denoise/hqdn3d-math.hpp
+    src/denoise/noise-meter-math.cpp
+    src/denoise/noise-meter-math.hpp
+    src/denoise/noise-meter.cpp
+    src/denoise/noise-meter.hpp
     src/denoise/noise-profile.cpp
     src/denoise/noise-profile.hpp
     src/denoise/nvof-probe.cpp

@@ -38,6 +38,7 @@ uniform float reset = 0.0;         // history invalid this frame
 uniform float mix_amount = 1.0;
 uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar, 4 exact, 5 weight, 6 removed (F)
 uniform float debug_gain = 16.0;
+uniform float grid_step = 4.0;     // noise measurement grid
 uniform float s_t_luma = 0.0;      // spatial thresholds, log2 units (0 = off)
 uniform float s_t_chroma = 0.0;
 uniform float s_radius = 8.0;      // 1..12 taps per side
@@ -112,6 +113,15 @@ float4 PSIdentity(VertInOut vert_in) : TARGET
 {
 	int2 p = int2(vert_in.uv * tex_size);
 	return image.Load(int3(p, 0));
+}
+
+// noise measurement (NOISE_MEASUREMENT.md): point-sample one input pixel per grid cell,
+// no filtering, so the per-pixel noise reaches the CPU intact
+float4 PSSampleGrid(VertInOut vert_in) : TARGET
+{
+	int2 p = int2(vert_in.uv * out_size);
+	int s = int(grid_step);
+	return image.Load(int3(p * s + int2(s / 2, s / 2), 0));
 }
 
 // ---- frame metric (design section 4) ---------------------------------------
@@ -357,6 +367,15 @@ float4 PSOutput(VertInOut vert_in) : TARGET
 	if (mix_amount <= 0.0)
 		return cur;
 	return float4(cur.rgb + mix_amount * (filt.rgb - cur.rgb), cur.a);
+}
+
+technique SampleGrid
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSSampleGrid(vert_in);
+	}
 }
 
 technique Identity

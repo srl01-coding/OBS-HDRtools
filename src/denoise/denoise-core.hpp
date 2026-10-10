@@ -52,6 +52,7 @@ enum DebugView {
 enum Placement { PlacementProgram = 0, PlacementSource = 1 };
 
 constexpr double kDebugGainMax = 1024.0;
+constexpr double kKneeMin = 0.01, kKneeMax = 50.0; // comparison knee UI range, nits
 
 // The shared parameter model (same obs_data keys in both placements).
 struct CoreSettings {
@@ -91,6 +92,10 @@ obs_properties_t *core_properties(obs_properties_t *props, Placement placement, 
 // Shared effect (data/effects/hdr-program-denoise.effect), loaded on first use.
 gs_effect_t *core_effect();
 void core_effect_free(); // module unload, graphics context
+
+// Point-sample `input` into `grid` (RGBA32F, input size / step): grid pixel (x, y) =
+// input pixel (x * step + step / 2, y * step + step / 2). For noise measurement.
+bool sample_grid(gs_texture_t *input, gs_texture_t *grid, int step, enum gs_color_space space);
 
 constexpr int kTelemetryRing = 4;
 struct Telemetry {
