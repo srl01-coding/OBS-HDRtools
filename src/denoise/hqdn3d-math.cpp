@@ -38,7 +38,7 @@ void sanitize(Params &p)
 {
 	clampv(p.temporal_luma, 0, 20, 0);
 	clampv(p.temporal_chroma, 0, 20, 0);
-	clampv(p.k_nits, 0.001, 10, 0.1);
+	clampv(p.k_nits, 0.001, 20, 0.1);
 	clampv(p.cut_sensitivity, 0, 100, 50);
 	clampv(p.protection_amount, 0, 1, 0.8);
 	sanitize(p.profile);

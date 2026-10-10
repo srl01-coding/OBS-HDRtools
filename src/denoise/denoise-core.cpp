@@ -83,7 +83,7 @@ CoreSettings core_parse(obs_data_t *data)
 	s.sp.profile = s.p.profile;
 	s.mix = std::clamp(obs_data_get_double(data, "mix"), 0.0, 1.0);
 	s.debug_view = (int)obs_data_get_int(data, "debug_view");
-	if (s.debug_view < ViewNormal || s.debug_view > ViewWeight)
+	if (s.debug_view < ViewNormal || s.debug_view > ViewRemovedNoise)
 		s.debug_view = ViewNormal;
 	s.debug_gain = std::clamp(obs_data_get_double(data, "debug_gain"), 1.0, kDebugGainMax);
 	s.log_counters = obs_data_get_bool(data, "log_counters");
@@ -111,7 +111,7 @@ obs_properties_t *core_properties(obs_properties_t *props, Placement placement, 
 				obs_module_text(placement == PlacementProgram ? "Denoise.TransitionProtection"
 									      : "Denoise.ChangeProtection"));
 	slider(hq, "protection_amount", "Denoise.ProtectionAmount", 0.0, 1.0, 0.01);
-	slider(hq, "comparison_knee_nits", "Denoise.Knee", 0.01, 1.0, 0.01);
+	slider(hq, "comparison_knee_nits", "Denoise.Knee", 0.01, 20.0, 0.01);
 	obs_properties_add_group(props, "hqdn3d", obs_module_text("Denoise.Hqdn3d"), OBS_GROUP_NORMAL, hq);
 
 	obs_properties_t *dbg = obs_properties_create();
@@ -119,6 +119,7 @@ obs_properties_t *core_properties(obs_properties_t *props, Placement placement, 
 						    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Normal"), ViewNormal);
 	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Difference"), ViewDifference);
+	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.RemovedNoise"), ViewRemovedNoise);
 	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Weight"), ViewWeight);
 	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.History"), ViewHistory);
 	obs_property_list_add_int(p, obs_module_text("Denoise.DebugView.Metric"), ViewMetric);

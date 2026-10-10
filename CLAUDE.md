@@ -54,4 +54,6 @@ hdr_toolkit_denoise_filter_v1, per-frame dedupe, continuity reset >2.5 frame int
 program-denoise.cpp. Never duplicate algorithm code between front-ends. Gates PL-* NOT RUN. Debug gain up to 1024;
 Temporal weight debug view. 7 Oct: STRENGTH_SCALES.md (equal S is not equal strength; temporal
 needs S 6-8 on measured noise); spatial-only skips metric/temporal passes (temporal_skipped, PL-G8).
+10 Oct: darks - knee K is the noise floor (fit K~8 nits); knee range 0.01-20, default 0.1 kept;
+noise-normalised removal view; do not combine K~8 with the measured profile (KN-1).
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

@@ -298,6 +298,12 @@ float4 PSOutput(VertInOut vert_in) : TARGET
 	float4 cur = image.Load(int3(p, 0));
 	float4 filt = filt_tex.Load(int3(p, 0));
 
+	if (debug_mode > 5.5) {
+		// what was removed, in the comparison domain F (luma): equal noise reads equal at
+		// every level when the knee matches the camera's noise floor
+		float d = abs(comp(luma(filt.rgb) * nits_per_unit) - comp(luma(cur.rgb) * nits_per_unit)) * debug_gain;
+		return float4(d, d, d, 1.0);
+	}
 	if (debug_mode > 4.5) {
 		// temporal weight: how much history this frame used (white = 0.9, the maximum;
 		// black = current frame only). Luma weight in grey, chroma weight in blue.

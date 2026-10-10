@@ -86,3 +86,60 @@ program-level spatial instance.
 
 The skipped frames are counted as `temporal_skipped`. History restarts when temporal is set
 again. Forced passes keep the temporal identity coverage of PL-G1 and PL-G2. Gate: PL-G8.
+
+## Darks: the comparison knee is the noise floor (10 Oct)
+
+The user reported (10 Oct) that temporal acts on the lighter areas but barely touches dark
+ones, such as the black piano. Two causes.
+
+**1. The comparison domain over-weights dark noise.** F = log2(1 + Y/K) with K = 0.1 nits
+treats noise as purely proportional to Y. The camera's noise is not. In nits, the measured σ
+(NOISE_PROFILE.md) is:
+
+| Y (nits) | 2.27 | 35.6 | 64.4 | 89.4 |
+|---|---|---|---|---|
+| σ (nits) | 0.117 | 0.488 | 0.683 | 0.796 |
+
+That fits σ ≈ a(Y + K) with K ≈ 8 nits, an additive floor plus a proportional part. For that
+noise law, log2(Y + K) is the domain in which noise has the same size at every level.
+
+σ_F relative to the wall:
+- K = 0.1: 4.65 / 1.29 / 1.00 / 0.84;
+- K = 8: 1.20 / 1.19 / 1.00 / 0.87.
+
+The measured T(Y) profile compensates only down to its first anchor, and is clamped to max 3.
+Below 2.27 nits it is flat, while the true requirement keeps rising.
+
+**Simulated temporal residual** (`tools/denoise-sim/knee_sim.cpp`):
+- static, noise independent from frame to frame, σ as measured;
+- the 0.5-nit σ is extrapolated from the fit, so treat that column as an estimate;
+- identity profile.
+
+| K | S | 0.5 n | 2.27 n | 35.6 n | 64.4 n | 89.4 n |
+|---|---|---|---|---|---|---|
+| 0.1 | 8 | 0.99 | 0.98 | 0.60 | 0.48 | 0.41 |
+| 0.1 | 12 | 0.99 | 0.94 | 0.42 | 0.35 | 0.31 |
+| 4 | 8 | 0.83 | 0.76 | 0.55 | 0.45 | 0.40 |
+| 8 | 8 | 0.51 | 0.51 | 0.50 | 0.43 | 0.39 |
+| 8 | 12 | 0.37 | 0.37 | 0.36 | 0.32 | 0.30 |
+
+With K = 8 the result is level-independent. Above about 30 nits the mids change little, since
+for Y >> K differences are unaffected.
+
+**Cost.** Below K the threshold is effectively absolute: about T x K x ln 2, which is 0.44 nits
+at S = 8. Dark detail or motion with less contrast than that is averaged, so a dark sleeve
+moving across the black piano can trail. That is inherent: the dark noise itself is about
+0.12 nits (5% at 2.27 nits), and no per-pixel test separates detail from noise of the same
+size. Motion compensation (NV-G0 path) is the real answer for dark motion.
+
+**Changes.**
+- The knee range is now 0.01-20 nits (UI) and 0.001-20 (sanitize). The default stays 0.1:
+  existing instances do not change.
+- K is shared by temporal and spatial.
+- Do **not** combine K ≈ 8 with the measured profile: that profile was derived at K = 0.1 and
+  would compensate twice. Use the identity profile with K ≈ 8.
+- Debug view *What was removed, noise-normalised*: |F(out) - F(in)| on luma x gain. The
+  linear *What was removed* view under-shows the darks, because dark noise is small in nits
+  (0.12 vs 0.68). At K ≈ 8, equal noise removal reads equally bright at every level.
+
+The fit comes from four ROIs on one clip and one camera, so it is not frozen. Gate KN-1.

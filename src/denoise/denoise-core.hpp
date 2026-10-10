@@ -46,6 +46,7 @@ enum DebugView {
 	ViewMetric = 3,
 	ViewExact = 4,
 	ViewWeight = 5,
+	ViewRemovedNoise = 6, // |F(out) - F(in)| luma, comparison domain: noise-normalised
 };
 
 enum Placement { PlacementProgram = 0, PlacementSource = 1 };
