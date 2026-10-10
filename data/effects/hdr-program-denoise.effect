@@ -29,12 +29,14 @@ uniform float units_per_nit = 0.004926108;
 uniform float knee = 0.1;          // comparison knee K, nits
 uniform float t_luma = 0.0;        // threshold, log2 units (0 = off)
 uniform float t_chroma = 0.0;
+uniform float beta_luma = 0.9;    // history weight caps (0.9 up to strength 20, up to 0.99 at 100)
+uniform float beta_chroma = 0.9;
 uniform float m_cut = 0.3;
 uniform float protect_amount = 0.8;
 uniform float cut_enabled = 1.0;
 uniform float reset = 0.0;         // history invalid this frame
 uniform float mix_amount = 1.0;
-uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar, 4 exact, 5 weight
+uniform float debug_mode = 0.0;    // 0 normal, 1 difference, 2 history difference, 3 metric bar, 4 exact, 5 weight, 6 removed (F)
 uniform float debug_gain = 16.0;
 uniform float s_t_luma = 0.0;      // spatial thresholds, log2 units (0 = off)
 uniform float s_t_chroma = 0.0;
@@ -202,8 +204,8 @@ float2 temporal_weights(float3 c, float3 h, float g)
 	float dl = abs(comp(yh) - comp(yc));
 	float3 dv = ch - cc;
 	float dc = sqrt(dot(dv, dv)) / (0.5 * (abs(yh) + abs(yc)) + knee) * 1.442695041;
-	float wl = tl > 0.0 ? 0.9 * response(dl / tl) * g : 0.0;
-	float wc = tc > 0.0 ? 0.9 * response(dc / tc) * g : 0.0;
+	float wl = tl > 0.0 ? beta_luma * response(dl / tl) * g : 0.0;
+	float wc = tc > 0.0 ? beta_chroma * response(dc / tc) * g : 0.0;
 	return float2(wl, wc);
 }
 
@@ -305,13 +307,13 @@ float4 PSOutput(VertInOut vert_in) : TARGET
 		return float4(d, d, d, 1.0);
 	}
 	if (debug_mode > 4.5) {
-		// temporal weight: how much history this frame used (white = 0.9, the maximum;
+		// temporal weight: how much history this frame used (white = the cap beta;
 		// black = current frame only). Luma weight in grey, chroma weight in blue.
 		float4 mt = metric_tex.Load(int3(0, 0, 0));
 		float g = global_factor(mt.r, mt.g);
 		float4 sv = src_tex.Load(int3(p, 0));
 		float4 hv = hist_tex.Load(int3(p, 0));
-		float2 w = temporal_weights(sv.rgb * nits_per_unit, hv.rgb * nits_per_unit, g) / 0.9;
+		float2 w = temporal_weights(sv.rgb * nits_per_unit, hv.rgb * nits_per_unit, g) / float2(max(beta_luma, 0.5), max(beta_chroma, 0.5));
 		return float4(w.x, w.x, 0.5 * (w.x + w.y), 1.0);
 	}
 	if (debug_mode > 3.5) {

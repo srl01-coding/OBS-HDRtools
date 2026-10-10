@@ -150,7 +150,7 @@ public:
 	double vram_mib() const;
 
 private:
-	bool ensure(gs_texture_t *like, bool spatial);
+	bool ensure(gs_texture_t *like, bool spatial, bool precise_history);
 	gs_texture_t *out_texture(gs_texture_t *like);
 	struct Frame;
 	void set_common(const Frame &f, uint32_t w, uint32_t h);
@@ -167,6 +167,7 @@ private:
 	bool history_valid_ = false;
 	uint32_t width_ = 0, height_ = 0;
 	enum gs_color_format format_ = GS_UNKNOWN;
+	enum gs_color_format hist_format_ = GS_UNKNOWN; // format_, or RGBA32F above strength 20
 };
 
 } // namespace denoise

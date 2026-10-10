@@ -34,7 +34,10 @@ namespace hdrtk {
 namespace denoise {
 
 constexpr double kLumaR = 0.2126, kLumaG = 0.7152, kLumaB = 0.0722;
-constexpr double kBeta = 0.9;              // maximum history weight
+constexpr double kBeta = 0.9;              // maximum history weight up to strength 20
+constexpr double kStrengthMax = 100.0;     // UI/sanitize range of all four strengths
+constexpr double kStrengthBetaKnee = 20.0; // above this, the temporal history weight cap rises
+constexpr double kBetaMax = 0.99;          // ... to this at kStrengthMax
 constexpr double kThresholdPerUnit = 0.01; // T = 0.01 * strength, log2 units
 constexpr double kFloorRise = 1.005;       // static-noise floor upward recovery per frame (~12 s per 6x)
 constexpr double kFloorAdd = 0.0001;       // ... plus this, so a zero floor recovers
@@ -60,6 +63,13 @@ void sanitize(Params &p);
 double comp(double y, double k);          // F(y) = sign(y) log2(1 + |y|/k)
 double response(double x);                // W(x) = (1 - x^2)^2 on [0, 1), else 0
 double cut_threshold(double sensitivity); // m_cut = 1.2 * 2^(-s/25)
+// History weight cap for a temporal strength: kBeta up to 20, then 1 - beta falls
+// geometrically from 0.1 (S 20) to 0.01 (S 100). Static residual ~ sqrt((1-b)/(1+b)):
+// 0.23 at S <= 20, 0.13 at S 60, 0.07 at S 100.
+double history_beta(double strength);
+// True when either cap exceeds kBeta: the history is then kept in RGBA32F (with 1 - b
+// = 0.01, an RGBA16F history would stall on differences below ~2.4%).
+bool needs_precise_history(const Params &p);
 double smoothstep(double e0, double e1, double x);
 // Chroma distance (design section 2), shared by temporal and spatial:
 // |ca - cb| / ((|ya| + |yb|) / 2 + k) / ln 2
@@ -89,6 +99,7 @@ double floor_update(double m, double f_prev, bool f_valid);
 // ---- float32 mirror of the shader (operation order as in the .effect) -----
 struct ShaderParams {
 	float t_luma, t_chroma, k, m_cut, protect_amount, cut_enabled;
+	float beta_luma, beta_chroma;
 	ShaderProfile profile;
 };
 ShaderParams make_shader_params(const Params &p);

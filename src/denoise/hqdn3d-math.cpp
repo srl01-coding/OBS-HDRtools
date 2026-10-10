@@ -36,12 +36,25 @@ static void clampv(double &v, double lo, double hi, double def)
 
 void sanitize(Params &p)
 {
-	clampv(p.temporal_luma, 0, 20, 0);
-	clampv(p.temporal_chroma, 0, 20, 0);
+	clampv(p.temporal_luma, 0, kStrengthMax, 0);
+	clampv(p.temporal_chroma, 0, kStrengthMax, 0);
 	clampv(p.k_nits, 0.001, 20, 0.1);
 	clampv(p.cut_sensitivity, 0, 100, 50);
 	clampv(p.protection_amount, 0, 1, 0.8);
 	sanitize(p.profile);
+}
+
+double history_beta(double strength)
+{
+	if (!(strength > kStrengthBetaKnee))
+		return kBeta;
+	const double t = std::min(1.0, (strength - kStrengthBetaKnee) / (kStrengthMax - kStrengthBetaKnee));
+	return 1.0 - (1.0 - kBeta) * std::pow((1.0 - kBetaMax) / (1.0 - kBeta), t);
+}
+
+bool needs_precise_history(const Params &p)
+{
+	return p.temporal_luma > kStrengthBetaKnee || p.temporal_chroma > kStrengthBetaKnee;
 }
 
 double comp(double y, double k)
@@ -108,8 +121,8 @@ Rgba temporal_pixel(const Params &p, const Rgba &cur, const Rgba &hist, double g
 	const double dl = std::fabs(comp(yh, p.k_nits) - comp(yc, p.k_nits));
 	const double dc = chroma_distance(ch, cc, yh, yc, p.k_nits);
 
-	const double wl = tl > 0 ? kBeta * response(dl / tl) * g : 0.0;
-	const double wc = tc > 0 ? kBeta * response(dc / tc) * g : 0.0;
+	const double wl = tl > 0 ? history_beta(p.temporal_luma) * response(dl / tl) * g : 0.0;
+	const double wc = tc > 0 ? history_beta(p.temporal_chroma) * response(dc / tc) * g : 0.0;
 	if (wl == 0.0 && wc == 0.0)
 		return cur; // exact identity (S = 0, cut, reset, or all differences above threshold)
 
@@ -186,6 +199,8 @@ ShaderParams make_shader_params(const Params &p)
 	s.m_cut = (float)cut_threshold(p.cut_sensitivity);
 	s.protect_amount = p.protection ? (float)p.protection_amount : 0.0f;
 	s.cut_enabled = p.cut_reset ? 1.0f : 0.0f;
+	s.beta_luma = (float)history_beta(p.temporal_luma);
+	s.beta_chroma = (float)history_beta(p.temporal_chroma);
 	s.profile = make_shader_profile(p.profile);
 	return s;
 }
@@ -237,8 +252,8 @@ void temporal_pixel_f(const ShaderParams &s, const float cur[4], const float his
 	for (int i = 0; i < 3; i++)
 		dd += (ch[i] - cc[i]) * (ch[i] - cc[i]);
 	const float dc = std::sqrt(dd) / (0.5f * (std::fabs(yh) + std::fabs(yc)) + s.k) * 1.442695041f;
-	const float wl = tl > 0.0f ? (float)kBeta * response_f(dl / tl) * g : 0.0f;
-	const float wc = tc > 0.0f ? (float)kBeta * response_f(dc / tc) * g : 0.0f;
+	const float wl = tl > 0.0f ? s.beta_luma * response_f(dl / tl) * g : 0.0f;
+	const float wc = tc > 0.0f ? s.beta_chroma * response_f(dc / tc) * g : 0.0f;
 	if (wl == 0.0f && wc == 0.0f) {
 		for (int i = 0; i < 4; i++)
 			out[i] = cur[i];

@@ -56,4 +56,6 @@ Temporal weight debug view. 7 Oct: STRENGTH_SCALES.md (equal S is not equal stre
 needs S 6-8 on measured noise); spatial-only skips metric/temporal passes (temporal_skipped, PL-G8).
 10 Oct: darks - knee K is the noise floor (fit K~8 nits); knee range 0.01-20, default 0.1 kept;
 noise-normalised removal view; do not combine K~8 with the measured profile (KN-1).
+10 Oct (user): strengths 0-100 (0-20 unchanged); T linear; temporal beta cap 0.9 -> 0.99 above S 20
+(history_beta, RGBA32F history above 20); SR-1.
 Windows compile check: python3 -m ziglang c++ -target x86_64-windows-gnu -c FILE -o out.o.

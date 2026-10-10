@@ -101,10 +101,10 @@ obs_properties_t *core_properties(obs_properties_t *props, Placement placement, 
 	slider(props, "mix", "Denoise.Mix", 0.0, 1.0, 0.01);
 
 	obs_properties_t *hq = obs_properties_create();
-	slider(hq, "temporal_luma", "Denoise.TemporalLuma", 0.0, 20.0, 0.1);
-	slider(hq, "temporal_chroma", "Denoise.TemporalChroma", 0.0, 20.0, 0.1);
-	slider(hq, "spatial_luma", "Denoise.SpatialLuma", 0.0, 20.0, 0.1);
-	slider(hq, "spatial_chroma", "Denoise.SpatialChroma", 0.0, 20.0, 0.1);
+	slider(hq, "temporal_luma", "Denoise.TemporalLuma", 0.0, kStrengthMax, 0.1);
+	slider(hq, "temporal_chroma", "Denoise.TemporalChroma", 0.0, kStrengthMax, 0.1);
+	slider(hq, "spatial_luma", "Denoise.SpatialLuma", 0.0, kStrengthMax, 0.1);
+	slider(hq, "spatial_chroma", "Denoise.SpatialChroma", 0.0, kStrengthMax, 0.1);
 	obs_properties_add_bool(hq, "scene_cut_reset", obs_module_text("Denoise.SceneCutReset"));
 	slider(hq, "cut_sensitivity", "Denoise.CutSensitivity", 0.0, 100.0, 1.0);
 	obs_properties_add_bool(hq, "transition_protection",
@@ -414,14 +414,18 @@ void Core::free_all()
 
 double Core::vram_mib() const
 {
+	auto bpp = [](enum gs_color_format f) {
+		return f == GS_RGBA16F ? 8.0 : f == GS_RGBA32F ? 16.0 : 4.0;
+	};
 	int frames = 0;
-	for (gs_texture_t *t : {cur_, hist_[0], hist_[1], sp_tmp_, sp_out_, scratch_, out_})
+	for (gs_texture_t *t : {cur_, sp_tmp_, sp_out_, scratch_, out_})
 		frames += t != nullptr;
-	const double bpp = format_ == GS_RGBA16F ? 8.0 : format_ == GS_RGBA32F ? 16.0 : 4.0;
-	return frames * (double)width_ * height_ * bpp / (1024.0 * 1024.0);
+	const int hist = (hist_[0] != nullptr) + (hist_[1] != nullptr);
+	return ((double)frames * bpp(format_) + (double)hist * bpp(hist_format_)) * width_ * height_ /
+	       (1024.0 * 1024.0);
 }
 
-bool Core::ensure(gs_texture_t *like, bool spatial)
+bool Core::ensure(gs_texture_t *like, bool spatial, bool precise_history)
 {
 	const uint32_t w = gs_texture_get_width(like), h = gs_texture_get_height(like);
 	const enum gs_color_format f = gs_texture_get_color_format(like);
@@ -432,12 +436,20 @@ bool Core::ensure(gs_texture_t *like, bool spatial)
 		format_ = f;
 		obs_log(LOG_INFO, "%s frame %ux%u %s", tag_.c_str(), w, h, format_name(f));
 	}
+	// strengths above 20 raise the history weight cap towards 0.99: keep that history in
+	// RGBA32F (a half-float history would stall on small differences). A format change
+	// restarts the history.
+	const enum gs_color_format hf = precise_history ? GS_RGBA32F : f;
+	if (hist_[0] && hf != hist_format_) {
+		destroy(hist_[0]);
+		destroy(hist_[1]);
+	}
 	if (!(hist_[0] && hist_[1] && l1_ && l2_ && metric_[0] && metric_[1])) {
 		const uint32_t w1 = (w + 15) / 16, h1 = (h + 15) / 16;
 		const uint32_t w2 = (w1 + 15) / 16, h2 = (h1 + 15) / 16;
 		for (int i = 0; i < 2; i++) {
 			if (!hist_[i])
-				hist_[i] = make_like(w, h, f);
+				hist_[i] = make_like(w, h, hf);
 			if (!metric_[i])
 				metric_[i] = gs_texture_create(1, 1, GS_RGBA32F, 1, nullptr, GS_RENDER_TARGET);
 		}
@@ -446,8 +458,9 @@ bool Core::ensure(gs_texture_t *like, bool spatial)
 		if (!l2_)
 			l2_ = gs_texture_create(w2, h2, GS_R32F, 1, nullptr, GS_RENDER_TARGET);
 		const bool ok = hist_[0] && hist_[1] && l1_ && l2_ && metric_[0] && metric_[1];
+		hist_format_ = hf;
 		obs_log(LOG_INFO, "%s temporal resources %s: history 2 x %ux%u %s", tag_.c_str(),
-			ok ? "created" : "FAILED", w, h, format_name(f));
+			ok ? "created" : "FAILED", w, h, format_name(hf));
 		history_valid_ = false;
 		if (!ok)
 			return false;
@@ -515,6 +528,8 @@ void Core::set_common(const Frame &f, uint32_t w, uint32_t h)
 	set_f(e, "knee", f.sp.k);
 	set_f(e, "t_luma", f.sp.t_luma);
 	set_f(e, "t_chroma", f.sp.t_chroma);
+	set_f(e, "beta_luma", f.sp.beta_luma);
+	set_f(e, "beta_chroma", f.sp.beta_chroma);
 	set_f(e, "m_cut", f.sp.m_cut);
 	set_f(e, "protect_amount", f.sp.protect_amount);
 	set_f(e, "cut_enabled", f.sp.cut_enabled);
@@ -559,7 +574,7 @@ void Core::collect_telemetry(const CoreSettings &s)
 bool Core::process(gs_texture_t *input, gs_texture_t *output, enum gs_color_space space, const CoreSettings &s)
 {
 	gs_effect_t *e = core_effect();
-	if (!e || !input || !ensure(input, s.spatial_on()))
+	if (!e || !input || !ensure(input, s.spatial_on(), s.temporal_passes() && needs_precise_history(s.p)))
 		return false;
 	if (!output) {
 		output = out_texture(input); // after ensure(): a size change frees every texture

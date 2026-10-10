@@ -199,8 +199,8 @@ int main()
 		double worst = 0;
 		for (int i = 0; i < 50000; i++) {
 			Params q;
-			q.temporal_luma = U(rng) * 20;
-			q.temporal_chroma = U(rng) * 20;
+			q.temporal_luma = U(rng) * kStrengthMax;
+			q.temporal_chroma = U(rng) * kStrengthMax;
 			q.k_nits = std::pow(10.0, U(rng) * 2 - 2);
 			const double y = std::pow(10.0, U(rng) * 6 - 2);
 			const Rgba c{y * U(rng), y * U(rng), y * U(rng), 1};
@@ -335,14 +335,51 @@ int main()
 		}
 	}
 
+	// 11. Extended range: history cap and static noise at S 100.
+	{
+		CHECK(history_beta(0) == kBeta && history_beta(20) == kBeta, "beta below knee");
+		CHECK(std::fabs(history_beta(kStrengthMax) - kBetaMax) < 1e-12, "beta at max");
+		double prev = kBeta;
+		bool mono = true;
+		for (double s = 20.5; s <= kStrengthMax; s += 0.5) {
+			const double b = history_beta(s);
+			mono = mono && b > prev && b <= kBetaMax + 1e-12;
+			prev = b;
+		}
+		CHECK(mono, "beta not increasing");
+		Params q = p;
+		q.temporal_luma = q.temporal_chroma = kStrengthMax;
+		CHECK(needs_precise_history(q) && !needs_precise_history(p), "precise history flag");
+		std::normal_distribution<double> N(0, 1);
+		const double y0 = 18.0, sigma = 0.004;
+		double in_var = 0, out_var = 0;
+		Rgba hist{y0, y0, y0, 1};
+		for (int f = 0; f < 40000; f++) {
+			const double v = y0 * (1 + sigma * N(rng));
+			const Rgba o = temporal_pixel(q, Rgba{v, v, v, 1}, hist, 1.0);
+			hist = o;
+			if (f > 1000) {
+				in_var += (v - y0) * (v - y0);
+				out_var += (o.r - y0) * (o.r - y0);
+			}
+		}
+		const double ratio = std::sqrt(out_var / in_var);
+		const double ideal = std::sqrt((1 - kBetaMax) / (1 + kBetaMax));
+		std::printf("static noise at S %.0f: std out/in = %.3f (IIR limit %.3f)\n", kStrengthMax, ratio, ideal);
+		CHECK(ratio > ideal * 0.95 && ratio < ideal * 1.3, "S 100 noise reduction off model");
+	}
+
 	// 10. Sanitize.
 	{
 		Params q;
 		q.temporal_luma = NAN;
 		q.cut_sensitivity = 500;
+		q.temporal_chroma = 400;
 		q.k_nits = -1;
 		sanitize(q);
-		CHECK(q.temporal_luma == 0 && q.cut_sensitivity == 100 && q.k_nits == 0.001, "sanitize");
+		CHECK(q.temporal_luma == 0 && q.temporal_chroma == kStrengthMax && q.cut_sensitivity == 100 &&
+			      q.k_nits == 0.001,
+		      "sanitize");
 	}
 
 	std::printf(failures ? "RESULT: FAIL (%d)\n" : "RESULT: PASS\n", failures);

@@ -143,3 +143,33 @@ size. Motion compensation (NV-G0 path) is the real answer for dark motion.
   (0.12 vs 0.68). At K ≈ 8, equal noise removal reads equally bright at every level.
 
 The fit comes from four ROIs on one clip and one camera, so it is not frozen. Gate KN-1.
+
+## Extended range 0-100 (10 Oct, user-directed)
+
+The user asked for strengths reaching "totally plasticized". All four strengths now go from
+0 to 100. Settings from 0 to 20 behave exactly as before, so no migration is needed.
+
+- **Threshold.** T = 0.01 x S continues linearly to 1.0 log2 at S = 100. At that point,
+  differences within a factor of about 2 are treated as noise, and texture and soft detail
+  are flattened. Spatial reaches its plastic look from the threshold alone. The radius (up
+  to 12) sets the scale of the smoothing.
+- **Temporal history cap.** The threshold alone cannot make temporal plastic, because the
+  0.9 history cap limits a static scene to about 0.23σ at any strength. Above S = 20 the cap
+  rises: 1 - β falls geometrically from 0.1 at S = 20 to 0.01 at S = 100 (`history_beta`).
+
+  | S | ≤ 20 | 40 | 60 | 80 | 100 |
+  |---|---|---|---|---|---|
+  | β | 0.900 | 0.944 | 0.968 | 0.982 | 0.990 |
+  | Memory time constant 1/(1-β), frames | 10 | 18 | 32 | 56 | 100 |
+  | Static residual √((1-β)/(1+β)) | 0.23 | 0.17 | 0.13 | 0.09 | 0.07 |
+
+  Expect long trails and ghosting on motion at high S. Scene-cut reset and protection
+  still apply.
+- **Precision.** With 1 - β = 0.01, a half-float history cannot move on differences below
+  about 2.4% (half an ulp divided by 1 - β) and would stall. Above S = 20 the history is
+  therefore kept in RGBA32F:
+  - 2 x 127 MiB at 3840 x 2160, instead of 2 x 63 MiB;
+  - switching across 20 restarts the history;
+  - VRAM reporting includes it.
+- **Tests (CPU).** Mirror equivalence with random S over 0-100; β monotone; static noise at
+  S = 100 measured 0.069 against the IIR limit of 0.071. Gate SR-1.

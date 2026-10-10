@@ -31,8 +31,8 @@ void sanitize(SpatialParams &p)
 	auto cl = [](double &v, double lo, double hi, double def) {
 		v = std::isfinite(v) ? std::clamp(v, lo, hi) : def;
 	};
-	cl(p.luma, 0, 20, 0);
-	cl(p.chroma, 0, 20, 0);
+	cl(p.luma, 0, kStrengthMax, 0);
+	cl(p.chroma, 0, kStrengthMax, 0);
 	cl(p.k_nits, 0.001, 20, 0.1);
 	p.radius = std::clamp(p.radius, 1, kSpatialRadiusMax);
 	sanitize(p.profile);

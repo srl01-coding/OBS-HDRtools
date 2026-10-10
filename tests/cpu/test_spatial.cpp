@@ -479,10 +479,10 @@ int main()
 	{
 		SpatialParams q;
 		q.luma = NAN;
-		q.chroma = 99;
+		q.chroma = 400;
 		q.radius = 40;
 		sanitize(q);
-		CHECK(q.luma == 0 && q.chroma == 20 && q.radius == kSpatialRadiusMax, "sanitize");
+		CHECK(q.luma == 0 && q.chroma == kStrengthMax && q.radius == kSpatialRadiusMax, "sanitize");
 	}
 
 	std::printf(failures ? "RESULT: FAIL (%d)\n" : "RESULT: PASS\n", failures);
